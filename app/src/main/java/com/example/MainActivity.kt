@@ -70,6 +70,7 @@ enum class ScreenState {
     ONBOARDING, // Acts as Login / Sing up
     HOME,
     REDEEM,
+    HISTORY,
     ADMIN,
     MATCHMAKING,
     MATCH_FOUND,
@@ -206,6 +207,9 @@ class TicTacToeViewModel : ViewModel() {
     private val _allMatchHistory = MutableStateFlow<List<MatchRecordFirebase>>(emptyList())
     val allMatchHistory: StateFlow<List<MatchRecordFirebase>> = _allMatchHistory.asStateFlow()
 
+    private val _userMatchHistory = MutableStateFlow<List<MatchRecordFirebase>>(emptyList())
+    val userMatchHistory: StateFlow<List<MatchRecordFirebase>> = _userMatchHistory.asStateFlow()
+
     private val _isAdminLoading = MutableStateFlow(false)
     val isAdminLoading: StateFlow<Boolean> = _isAdminLoading.asStateFlow()
 
@@ -235,6 +239,7 @@ class TicTacToeViewModel : ViewModel() {
             _currentScreen.value = ScreenState.HOME
             refreshUserProfile()
             loadRedeemHistory()
+            loadUserMatchHistory()
             if (savedEmail == "vfttffx57@gmail.com") {
                 loadAdminData()
             }
@@ -264,12 +269,13 @@ class TicTacToeViewModel : ViewModel() {
                     _userPoints.value = profile.points
                 } else {
                     // Initialize first if profile failed to fetch
-                    FirebaseService.saveUserProfile(result.uid, result.email, 500)
-                    _userPoints.value = 500
+                    FirebaseService.saveUserProfile(result.uid, result.email, 200)
+                    _userPoints.value = 200
                 }
 
                 _currentScreen.value = ScreenState.HOME
                 loadRedeemHistory()
+                loadUserMatchHistory()
                 if (result.email == "vfttffx57@gmail.com") {
                     loadAdminData()
                 }
@@ -301,12 +307,13 @@ class TicTacToeViewModel : ViewModel() {
                 val sp = context.getSharedPreferences("user_session", Context.MODE_PRIVATE)
                 sp.edit().putString("uid", result.uid).putString("email", result.email).apply()
 
-                // Register 500 Points default welcome balance in Cloud Database
-                val saveOk = FirebaseService.saveUserProfile(result.uid, result.email, 500)
-                _userPoints.value = 500
+                // Register 200 Points default welcome balance in Cloud Database
+                val saveOk = FirebaseService.saveUserProfile(result.uid, result.email, 200)
+                _userPoints.value = 200
 
                 _currentScreen.value = ScreenState.HOME
                 loadRedeemHistory()
+                loadUserMatchHistory()
             } else {
                 _authError.value = result.errorMessage ?: "Signup failed. Try different credentials."
             }
@@ -339,6 +346,14 @@ class TicTacToeViewModel : ViewModel() {
         viewModelScope.launch {
             val list = FirebaseService.getRedeemRequests(uid)
             _redeemHistory.value = list
+        }
+    }
+
+    fun loadUserMatchHistory() {
+        val uid = _userUid.value ?: return
+        viewModelScope.launch {
+            val allMatches = FirebaseService.getMatchHistoryAll()
+            _userMatchHistory.value = allMatches.filter { it.uid == uid }
         }
     }
 
@@ -505,13 +520,8 @@ class TicTacToeViewModel : ViewModel() {
         val playerSym = "X"
         val compSym = "O"
 
-        // 30% chance of a slight strategic error to allow player to win, keeping it fun!
-        val selectedMove = if ((1..100).random() <= 30) {
-            val available = currentBoard.indices.filter { currentBoard[it].isEmpty() }
-            if (available.isNotEmpty()) available.random() else -1
-        } else {
-            selectComputerMove(currentBoard, playerSym, compSym)
-        }
+        // Unbeatable perfectly strategic AI
+        val selectedMove = selectComputerMove(currentBoard, playerSym, compSym)
 
         if (selectedMove != -1) {
             val newBoard = currentBoard.toMutableList()
@@ -646,6 +656,7 @@ class TicTacToeViewModel : ViewModel() {
     fun exitToHome() {
         refreshUserProfile()
         loadRedeemHistory()
+        loadUserMatchHistory()
         _currentScreen.value = ScreenState.HOME
     }
 
@@ -1058,23 +1069,159 @@ fun AdmobBanner(modifier: Modifier = Modifier) {
 @Composable
 fun AppScreenContainer(viewModel: TicTacToeViewModel) {
     val screenState by viewModel.currentScreen.collectAsState()
+    val email by viewModel.userEmail.collectAsState()
 
-    AnimatedContent(
-        targetState = screenState,
-        transitionSpec = {
-            fadeIn(animationSpec = tween(300)) togetherWith fadeOut(animationSpec = tween(300))
+    // Determine if we should show the fixed navigation bar
+    val showNavBar = screenState == ScreenState.HOME || 
+                     screenState == ScreenState.REDEEM || 
+                     screenState == ScreenState.HISTORY || 
+                     screenState == ScreenState.ADMIN
+
+    Scaffold(
+        bottomBar = {
+            if (showNavBar) {
+                NavigationBar(
+                    containerColor = Color(0xFF141221),
+                    tonalElevation = 8.dp,
+                    modifier = Modifier.border(1.dp, Color(0xFF262144))
+                ) {
+                    // 1. Play Arena Tab
+                    NavigationBarItem(
+                        selected = screenState == ScreenState.HOME,
+                        onClick = { viewModel.setScreen(ScreenState.HOME) },
+                        icon = { 
+                            Icon(
+                                imageVector = Icons.Default.PlayArrow, 
+                                contentDescription = "Play Arena", 
+                                tint = if (screenState == ScreenState.HOME) Color(0xFF00FF87) else Color(0xFF8B8A9D)
+                            ) 
+                        },
+                        label = { 
+                            Text(
+                                "Play", 
+                                color = if (screenState == ScreenState.HOME) Color.White else Color(0xFF8B8A9D), 
+                                fontWeight = FontWeight.Bold, 
+                                fontSize = 11.sp
+                            ) 
+                        },
+                        colors = NavigationBarItemDefaults.colors(
+                            indicatorColor = Color(0xFF231A47)
+                        )
+                    )
+
+                    // 2. Redeem Rewards Tab
+                    NavigationBarItem(
+                        selected = screenState == ScreenState.REDEEM,
+                        onClick = { 
+                            viewModel.loadRedeemHistory()
+                            viewModel.refreshUserProfile()
+                            viewModel.setScreen(ScreenState.REDEEM) 
+                        },
+                        icon = { 
+                            Icon(
+                                imageVector = Icons.Default.ShoppingCart, 
+                                contentDescription = "Redeem Rewards", 
+                                tint = if (screenState == ScreenState.REDEEM) Color(0xFF00FF87) else Color(0xFF8B8A9D)
+                            ) 
+                        },
+                        label = { 
+                            Text(
+                                "Redeem", 
+                                color = if (screenState == ScreenState.REDEEM) Color.White else Color(0xFF8B8A9D), 
+                                fontWeight = FontWeight.Bold, 
+                                fontSize = 11.sp
+                            ) 
+                        },
+                        colors = NavigationBarItemDefaults.colors(
+                            indicatorColor = Color(0xFF231A47)
+                        )
+                    )
+
+                    // 3. Activity History Tab
+                    NavigationBarItem(
+                        selected = screenState == ScreenState.HISTORY,
+                        onClick = { 
+                            viewModel.loadUserMatchHistory()
+                            viewModel.loadRedeemHistory()
+                            viewModel.setScreen(ScreenState.HISTORY) 
+                        },
+                        icon = { 
+                            Icon(
+                                imageVector = Icons.Default.List, 
+                                contentDescription = "History Logs", 
+                                tint = if (screenState == ScreenState.HISTORY) Color(0xFF00FF87) else Color(0xFF8B8A9D)
+                            ) 
+                        },
+                        label = { 
+                            Text(
+                                "History", 
+                                color = if (screenState == ScreenState.HISTORY) Color.White else Color(0xFF8B8A9D), 
+                                fontWeight = FontWeight.Bold, 
+                                fontSize = 11.sp
+                            ) 
+                        },
+                        colors = NavigationBarItemDefaults.colors(
+                            indicatorColor = Color(0xFF231A47)
+                        )
+                    )
+
+                    // 4. Admin Settings Tab (Conditional based on admin email ID)
+                    if (email == "vfttffx57@gmail.com") {
+                        NavigationBarItem(
+                            selected = screenState == ScreenState.ADMIN,
+                            onClick = { 
+                                viewModel.loadAdminData()
+                                viewModel.setScreen(ScreenState.ADMIN) 
+                            },
+                            icon = { 
+                                Icon(
+                                    imageVector = Icons.Default.Settings, 
+                                    contentDescription = "Admin", 
+                                    tint = if (screenState == ScreenState.ADMIN) Color(0xFFFF5252) else Color(0xFF8B8A9D)
+                                ) 
+                            },
+                            label = { 
+                                Text(
+                                    "Admin", 
+                                    color = if (screenState == ScreenState.ADMIN) Color.White else Color(0xFF8B8A9D), 
+                                    fontWeight = FontWeight.Bold, 
+                                    fontSize = 11.sp
+                                ) 
+                            },
+                            colors = NavigationBarItemDefaults.colors(
+                                indicatorColor = Color(0xFF381515)
+                            )
+                        )
+                    }
+                }
+            }
         },
-        label = "RouterTransitions"
-    ) { target ->
-        when (target) {
-            ScreenState.ONBOARDING -> FirebaseLoginSetupScreen(viewModel)
-            ScreenState.HOME -> HomeDashboardScreen(viewModel)
-            ScreenState.REDEEM -> RedeemScreen(viewModel)
-            ScreenState.ADMIN -> AdminPanelScreen(viewModel)
-            ScreenState.MATCHMAKING -> MatchmakingScreen(viewModel)
-            ScreenState.MATCH_FOUND -> MatchFoundCards(viewModel)
-            ScreenState.GAMEPLAY -> GameplayScreen(viewModel)
-            ScreenState.GAMEOVER -> GameOverScreen(viewModel)
+        containerColor = Color(0xFF0C0A12)
+    ) { innerPadding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+        ) {
+            AnimatedContent(
+                targetState = screenState,
+                transitionSpec = {
+                    fadeIn(animationSpec = tween(250)) togetherWith fadeOut(animationSpec = tween(250))
+                },
+                label = "RouterTransitions"
+            ) { target ->
+                when (target) {
+                    ScreenState.ONBOARDING -> FirebaseLoginSetupScreen(viewModel)
+                    ScreenState.HOME -> HomeDashboardScreen(viewModel)
+                    ScreenState.REDEEM -> RedeemScreen(viewModel)
+                    ScreenState.HISTORY -> UserHistoryScreen(viewModel)
+                    ScreenState.ADMIN -> AdminPanelScreen(viewModel)
+                    ScreenState.MATCHMAKING -> MatchmakingScreen(viewModel)
+                    ScreenState.MATCH_FOUND -> MatchFoundCards(viewModel)
+                    ScreenState.GAMEPLAY -> GameplayScreen(viewModel)
+                    ScreenState.GAMEOVER -> GameOverScreen(viewModel)
+                }
+            }
         }
     }
 }
@@ -1414,95 +1561,24 @@ fun HomeDashboardScreen(viewModel: TicTacToeViewModel) {
                 }
             }
 
-            // Earn Free Points card option
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF110E20)),
-                shape = RoundedCornerShape(16.dp),
+            Spacer(modifier = Modifier.weight(1f))
+
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 6.dp)
-                    .clickable {
-                        if (activity != null) {
-                            viewModel.watchRewardedAdForPoints(activity)
-                        }
-                    }
-                    .border(1.dp, Color(0xFF241F3C), RoundedCornerShape(16.dp))
+                    .padding(bottom = 20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Row(
-                    modifier = Modifier.padding(16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(text = "💎", fontSize = 20.sp)
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column {
-                            Text("FREE +150 POINTS", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                            Text("Support us and claim bonus points", color = Color(0xFF8B8A9D), fontSize = 11.sp)
-                        }
-                    }
-                    Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null, tint = Color(0xFF00FF87))
-                }
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // Action Card: REDEEM POINTS
-            Button(
-                onClick = {
-                    viewModel.loadRedeemHistory()
-                    viewModel.refreshUserProfile()
-                    viewModel.setScreen(ScreenState.REDEEM)
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7000FF)),
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(54.dp)
-            ) {
-                Icon(imageVector = Icons.Default.ShoppingCart, contentDescription = null, tint = Color.White)
-                Spacer(modifier = Modifier.width(10.dp))
-                Text(text = "REDEEM PLAY STORE GIFT CODES", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-            }
-
-            // Admin Link Option visible only for admin email
-            if (email == "vfttffx57@gmail.com") {
-                Spacer(modifier = Modifier.height(12.dp))
-                Button(
-                    onClick = {
-                        viewModel.loadAdminData()
-                        viewModel.setScreen(ScreenState.ADMIN)
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5252)),
-                    shape = RoundedCornerShape(14.dp),
+                Text(
+                    text = "SIGN OUT SESSION",
+                    color = Color(0xFFFF5252),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .height(50.dp)
-                ) {
-                    Icon(imageVector = Icons.Default.Settings, contentDescription = null, tint = Color.White)
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text(text = "ENTER ADMIN DASHBOARD", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                }
+                        .clickable { viewModel.logout(context) }
+                        .padding(12.dp)
+                )
             }
-        }
-
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            AdmobBanner(modifier = Modifier.padding(vertical = 4.dp))
-            Spacer(modifier = Modifier.height(10.dp))
-            Text(
-                text = "SIGN OUT SECTION",
-                color = Color(0xFFFF5252),
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier
-                    .clickable { viewModel.logout(context) }
-                    .padding(8.dp)
-            )
         }
     }
 }
@@ -1525,13 +1601,9 @@ fun RedeemScreen(viewModel: TicTacToeViewModel) {
             modifier = Modifier
                 .fillMaxWidth()
                 .background(Color(0xFF141221))
-                .padding(horizontal = 16.dp, vertical = 14.dp),
+                .padding(horizontal = 20.dp, vertical = 16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = { viewModel.setScreen(ScreenState.HOME) }) {
-                Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
-            }
-            Spacer(modifier = Modifier.width(12.dp))
             Text(
                 text = "REDEEM REWARDS",
                 fontSize = 18.sp,
@@ -1643,13 +1715,261 @@ fun RedeemScreen(viewModel: TicTacToeViewModel) {
                 }
             }
         }
-        
-        AdmobBanner(modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp))
     }
 }
 
 // Float output formatter safely
 fun Double.format(digits: Int) = java.lang.String.format("%.${digits}f", this)
+
+// --- SCREEN 3B: USER HISTORY SCREEN (COMBINES MATCHES LOGS AND REDEEM CODES) ---
+@Composable
+fun UserHistoryScreen(viewModel: TicTacToeViewModel) {
+    val history by viewModel.redeemHistory.collectAsState()
+    val matches by viewModel.userMatchHistory.collectAsState()
+    var selectedTab by remember { mutableStateOf(0) } // 0: Match Logs, 1: Gift Cards
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF0C0A12))
+            .windowInsetsPadding(WindowInsets.safeDrawing)
+    ) {
+        // Top Toolbar
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFF141221))
+                .padding(horizontal = 20.dp, vertical = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "MY ACTIVITY HISTORY",
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Black,
+                color = Color.White
+            )
+        }
+
+        SpanTabs(
+            selectedTab = selectedTab,
+            onTabSelected = { selectedTab = it },
+            tabs = listOf("Game matches arena", "Claimed gift codes")
+        )
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        if (selectedTab == 0) {
+            // Match History Tab
+            if (matches.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(24.dp)
+                    ) {
+                        Text("🎮", fontSize = 48.sp)
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            "No Arena matches played yet.", 
+                            color = Color.White, 
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            "Play dynamic matches to win cash codes!", 
+                            color = Color(0xFF8B8A9D), 
+                            fontSize = 12.sp,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .weight(1f)
+                        .padding(horizontal = 20.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = PaddingValues(bottom = 16.dp)
+                ) {
+                    items(matches) { match ->
+                        UserMatchHistoryRow(match)
+                    }
+                }
+            }
+        } else {
+            // Redeem History Tab
+            if (history.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(24.dp)
+                    ) {
+                        Text("🎁", fontSize = 48.sp)
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            "No balance redemptions yet.", 
+                            color = Color.White, 
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            "Earn 1000 Points and claim high stakes cards!", 
+                            color = Color(0xFF8B8A9D), 
+                            fontSize = 12.sp,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .weight(1f)
+                        .padding(horizontal = 20.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = PaddingValues(bottom = 16.dp)
+                ) {
+                    items(history) { req ->
+                        RedeemHistoryRow(req)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SpanTabs(
+    selectedTab: Int,
+    onTabSelected: (Int) -> Unit,
+    tabs: List<String>
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 8.dp)
+            .clip(RoundedCornerShape(30.dp))
+            .background(Color(0xFF141221))
+            .border(1.dp, Color(0xFF262144), RoundedCornerShape(30.dp))
+            .padding(4.dp)
+    ) {
+        tabs.forEachIndexed { idx, label ->
+            val isActive = idx == selectedTab
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(30.dp))
+                    .background(if (isActive) Color(0xFF1C1340) else Color.Transparent)
+                    .clickable { onTabSelected(idx) }
+                    .padding(vertical = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = label.uppercase(Locale.getDefault()),
+                    color = if (isActive) Color(0xFF00FF87) else Color(0xFF8B8A9D),
+                    fontWeight = FontWeight.Black,
+                    fontSize = 11.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun UserMatchHistoryRow(match: MatchRecordFirebase) {
+    val dateStr = try {
+        val sdf = SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault())
+        sdf.format(Date(match.timestamp))
+    } catch(e: Exception) {
+         ""
+    }
+
+    val outcomeColor = when (match.outcome) {
+        "WIN" -> Color(0xFF00FF87)
+        "LOSS" -> Color(0xFFFF5252)
+        else -> Color(0xFFFFEB3B)
+    }
+
+    val iconBg = when (match.outcome) {
+        "WIN" -> Color(0xFF00FF87).copy(alpha = 0.1f)
+        "LOSS" -> Color(0xFFFF5252).copy(alpha = 0.1f)
+        else -> Color(0xFFFFEB3B).copy(alpha = 0.1f)
+    }
+
+    val badgeEmoji = when (match.outcome) {
+        "WIN" -> "🏆"
+        "LOSS" -> "💀"
+        else -> "🤝"
+    }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, Color(0xFF231F3B), RoundedCornerShape(12.dp)),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF141221)),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .background(iconBg, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(text = badgeEmoji, fontSize = 18.sp)
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Column {
+                    Text(
+                        text = "Challenge Battle",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp
+                    )
+                    Text(
+                        text = dateStr,
+                        color = Color(0xFF8B8A9D),
+                        fontSize = 11.sp
+                    )
+                }
+            }
+
+            Column(horizontalAlignment = Alignment.End) {
+                Text(
+                    text = match.outcome,
+                    color = outcomeColor,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 12.sp
+                )
+                Text(
+                    text = if (match.pointsChange >= 0) "+${match.pointsChange} PTS" else "${match.pointsChange} PTS",
+                    color = if (match.pointsChange >= 0) Color(0xFF00FF87) else Color(0xFFFF5252),
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 11.sp
+                )
+            }
+        }
+    }
+}
 
 @Composable
 fun RedeemHistoryRow(req: RedeemRequest) {
@@ -1763,13 +2083,9 @@ fun AdminPanelScreen(viewModel: TicTacToeViewModel) {
             modifier = Modifier
                 .fillMaxWidth()
                 .background(Color(0xFF141221))
-                .padding(horizontal = 16.dp, vertical = 14.dp),
+                .padding(horizontal = 20.dp, vertical = 16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = { viewModel.setScreen(ScreenState.HOME) }) {
-                Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
-            }
-            Spacer(modifier = Modifier.width(12.dp))
             Text(
                 text = "ADMIN PANEL",
                 fontSize = 18.sp,
@@ -2351,8 +2667,6 @@ fun GameplayScreen(viewModel: TicTacToeViewModel) {
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(bottom = 16.dp)
         )
-        
-        AdmobBanner(modifier = Modifier.padding(bottom = 12.dp))
     }
 }
 
@@ -2538,6 +2852,5 @@ fun GameOverScreen(viewModel: TicTacToeViewModel) {
         }
         
         Spacer(modifier = Modifier.height(20.dp))
-        AdmobBanner()
     }
 }
