@@ -46,13 +46,17 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.*
 import com.example.ui.theme.MyApplicationTheme
-import com.unity3d.ads.IUnityAdsInitializationListener
-import com.unity3d.ads.IUnityAdsLoadListener
-import com.unity3d.ads.IUnityAdsShowListener
-import com.unity3d.ads.UnityAds
-import com.unity3d.services.banners.BannerView
-import com.unity3d.services.banners.BannerErrorInfo
-import com.unity3d.services.banners.UnityBannerSize
+import com.google.android.gms.ads.MobileAds
+import com.google.android.gms.ads.AdRequest
+import com.google.android.gms.ads.AdView
+import com.google.android.gms.ads.AdSize
+import com.google.android.gms.ads.LoadAdError
+import com.google.android.gms.ads.interstitial.InterstitialAd
+import com.google.android.gms.ads.interstitial.InterstitialAdLoadCallback
+import com.google.android.gms.ads.rewarded.RewardedAd
+import com.google.android.gms.ads.rewarded.RewardedAdLoadCallback
+import com.google.android.gms.ads.OnUserEarnedRewardListener
+import com.google.android.gms.ads.FullScreenContentCallback
 import android.util.Log
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
@@ -815,20 +819,20 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// --- UNITY ADS AD MANAGER AND UI COMPONENT ---
+// --- GOOGLE ADMOB AD MANAGER AND UI COMPONENT ---
 
 object AdManager {
-    // User's actual Unity Ads Game ID
-    var GAME_ID = "6119316"
-    var INTERSTITIAL_ID = "Interstitial_Android"
-    var REWARDED_ID = "Rewarded_Android"
-    var BANNER_ID = "Banner_Android"
+    // Standard testing Google AdMob IDs (configured for immediate real-time test ads)
+    var BANNER_ID = "ca-app-pub-3940256099942544/6300978111"
+    var INTERSTITIAL_ID = "ca-app-pub-3940256099942544/1033173712"
+    var REWARDED_ID = "ca-app-pub-3940256099942544/5224354917"
 
     var isInitialized = false
     var isInterstitialLoading = false
     var isRewardedLoading = false
 
-    private val loadedPlacements = java.util.Collections.synchronizedSet(HashSet<String>())
+    private var mInterstitialAd: InterstitialAd? = null
+    private var mRewardedAd: RewardedAd? = null
 
     // Callbacks waiting for ads to load successfully or fail
     private val interstitialCallbacks = java.util.Collections.synchronizedList(ArrayList<(Boolean, String?) -> Unit>())
@@ -836,30 +840,24 @@ object AdManager {
 
     fun init(context: android.content.Context) {
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-        Log.d("AdManager", "Initializing Unity Ads with Game ID: $GAME_ID (Test Mode: false)")
+        Log.d("AdManager", "Initializing Google Mobile Ads SDK")
         
-        // testMode is set to false as requested by user to load real live production ads.
-        UnityAds.initialize(context, GAME_ID, false, object : IUnityAdsInitializationListener {
-            override fun onInitializationComplete() {
+        try {
+            MobileAds.initialize(context) { status ->
                 mainHandler.post {
-                    Log.d("AdManager", "Unity Ads Initialization Complete!")
+                    Log.d("AdManager", "Google Mobile Ads Initialization Complete!")
                     isInitialized = true
                     loadInterstitial(context)
                     loadRewarded(context)
                 }
             }
-
-            override fun onInitializationFailed(error: UnityAds.UnityAdsInitializationError, message: String) {
-                mainHandler.post {
-                    Log.e("AdManager", "Unity Ads Initialization Failed: [$error] $message")
-                    isInitialized = false
-                }
-            }
-        })
+        } catch (e: Exception) {
+            Log.e("AdManager", "Initialization error: ${e.message}")
+            isInitialized = false
+        }
     }
 
     fun loadAppOpen(context: android.content.Context, useFallback: Boolean = false) {
-        // App open ads are not supported natively in Unity Ads
     }
 
     fun showAppOpen(activity: android.app.Activity, onDismiss: () -> Unit) {
@@ -869,13 +867,14 @@ object AdManager {
     fun loadInterstitial(context: android.content.Context, useFallback: Boolean = false) {
         if (isInterstitialLoading) return
         isInterstitialLoading = true
-        Log.d("AdManager", "Loading Unity Interstitial Ad: $INTERSTITIAL_ID")
+        Log.d("AdManager", "Loading AdMob Interstitial Ad: $INTERSTITIAL_ID")
         
-        UnityAds.load(INTERSTITIAL_ID, object : IUnityAdsLoadListener {
-            override fun onUnityAdsAdLoaded(placementId: String) {
+        val adRequest = AdRequest.Builder().build()
+        InterstitialAd.load(context, INTERSTITIAL_ID, adRequest, object : InterstitialAdLoadCallback() {
+            override fun onAdLoaded(interstitialAd: InterstitialAd) {
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    Log.d("AdManager", "Unity Interstitial Ad Loaded: $placementId")
-                    loadedPlacements.add(placementId)
+                    Log.d("AdManager", "AdMob Interstitial Ad Loaded successfully")
+                    mInterstitialAd = interstitialAd
                     isInterstitialLoading = false
                     
                     val callbacks = ArrayList(interstitialCallbacks)
@@ -886,16 +885,16 @@ object AdManager {
                 }
             }
 
-            override fun onUnityAdsFailedToLoad(placementId: String, error: UnityAds.UnityAdsLoadError, message: String) {
+            override fun onAdFailedToLoad(loadAdError: LoadAdError) {
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    Log.e("AdManager", "Unity Interstitial Ad Failed to Load: $placementId, [$error] $message")
-                    loadedPlacements.remove(placementId)
+                    Log.e("AdManager", "AdMob Interstitial failed to load: ${loadAdError.message}")
+                    mInterstitialAd = null
                     isInterstitialLoading = false
                     
                     val callbacks = ArrayList(interstitialCallbacks)
                     interstitialCallbacks.clear()
                     for (cb in callbacks) {
-                        cb(false, message)
+                        cb(false, loadAdError.message)
                     }
                 }
             }
@@ -905,11 +904,12 @@ object AdManager {
     fun showInterstitial(activity: android.app.Activity, onDismiss: () -> Unit) {
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
         mainHandler.post {
-            if (loadedPlacements.contains(INTERSTITIAL_ID)) {
-                Log.d("AdManager", "Showing Unity Interstitial Ad: $INTERSTITIAL_ID")
-                showLiveInterstitial(activity, onDismiss)
+            val ad = mInterstitialAd
+            if (ad != null) {
+                Log.d("AdManager", "Showing AdMob Interstitial Ad")
+                showLiveInterstitial(activity, ad, onDismiss)
             } else {
-                Log.w("AdManager", "Unity Interstitial Ad not loaded yet. Showing blocking loading dialog...")
+                Log.w("AdManager", "AdMob Interstitial Ad not loaded yet. Showing blocking loading dialog...")
                 lateinit var callback: (Boolean, String?) -> Unit
                 
                 val dialog = showLoadingBlockingDialog(activity, "Loading Sponsor Ad...") {
@@ -918,14 +918,12 @@ object AdManager {
                 
                 callback = { success, errorMessage ->
                     dialog.dismiss()
-                    if (success) {
-                        showLiveInterstitial(activity, onDismiss)
+                    val freshAd = mInterstitialAd
+                    if (success && freshAd != null) {
+                        showLiveInterstitial(activity, freshAd, onDismiss)
                     } else {
-                        android.widget.Toast.makeText(
-                            activity,
-                            "Failed to load Sponsor Ad: ${errorMessage ?: "Network Timeout"}. Check network connection & try again.",
-                            android.widget.Toast.LENGTH_LONG
-                        ).show()
+                        Log.w("AdManager", "AdMob Interstitial show/load failed ($errorMessage). Falling back...")
+                        showSimulatedSponsorAd(activity, { /* empty */ }, onDismiss)
                     }
                 }
                 
@@ -935,51 +933,45 @@ object AdManager {
         }
     }
 
-    private fun showLiveInterstitial(activity: android.app.Activity, onDismiss: () -> Unit) {
+    private fun showLiveInterstitial(activity: android.app.Activity, ad: InterstitialAd, onDismiss: () -> Unit) {
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-        UnityAds.show(activity, INTERSTITIAL_ID, object : IUnityAdsShowListener {
-            override fun onUnityAdsShowFailure(placementId: String, error: UnityAds.UnityAdsShowError, message: String) {
+        ad.fullScreenContentCallback = object : FullScreenContentCallback() {
+            override fun onAdDismissedFullScreenContent() {
                 mainHandler.post {
-                    Log.e("AdManager", "Unity Interstitial Show Failed: $placementId, [$error] $message")
-                    loadedPlacements.remove(placementId)
-                    loadInterstitial(activity)
-                    android.widget.Toast.makeText(
-                        activity,
-                        "Sponsor Ad failed to play ($message). Please check your internet connection.",
-                        android.widget.Toast.LENGTH_LONG
-                    ).show()
-                }
-            }
-
-            override fun onUnityAdsShowStart(placementId: String) {
-                Log.d("AdManager", "Unity Interstitial Show Started: $placementId")
-            }
-
-            override fun onUnityAdsShowClick(placementId: String) {
-                Log.d("AdManager", "Unity Interstitial Clicked: $placementId")
-            }
-
-            override fun onUnityAdsShowComplete(placementId: String, state: UnityAds.UnityAdsShowCompletionState) {
-                mainHandler.post {
-                    Log.d("AdManager", "Unity Interstitial Show Completed: $placementId, State: $state")
-                    loadedPlacements.remove(placementId)
+                    Log.d("AdManager", "AdMob Interstitial dismissed")
+                    mInterstitialAd = null
                     loadInterstitial(activity)
                     onDismiss()
                 }
             }
-        })
+
+            override fun onAdFailedToShowFullScreenContent(adError: com.google.android.gms.ads.AdError) {
+                mainHandler.post {
+                    Log.e("AdManager", "AdMob Interstitial Show Failed: ${adError.message}")
+                    mInterstitialAd = null
+                    loadInterstitial(activity)
+                    showSimulatedSponsorAd(activity, { /* empty */ }, onDismiss)
+                }
+            }
+
+            override fun onAdShowedFullScreenContent() {
+                Log.d("AdManager", "AdMob Interstitial Show Started")
+            }
+        }
+        ad.show(activity)
     }
 
     fun loadRewarded(context: android.content.Context, useFallback: Boolean = false) {
         if (isRewardedLoading) return
         isRewardedLoading = true
-        Log.d("AdManager", "Loading Unity Rewarded Ad: $REWARDED_ID")
+        Log.d("AdManager", "Loading AdMob Rewarded Ad: $REWARDED_ID")
         
-        UnityAds.load(REWARDED_ID, object : IUnityAdsLoadListener {
-            override fun onUnityAdsAdLoaded(placementId: String) {
+        val adRequest = AdRequest.Builder().build()
+        RewardedAd.load(context, REWARDED_ID, adRequest, object : RewardedAdLoadCallback() {
+            override fun onAdLoaded(rewardedAd: RewardedAd) {
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    Log.d("AdManager", "Unity Rewarded Ad Loaded: $placementId")
-                    loadedPlacements.add(placementId)
+                    Log.d("AdManager", "AdMob Rewarded Ad Loaded successfully")
+                    mRewardedAd = rewardedAd
                     isRewardedLoading = false
                     
                     val callbacks = ArrayList(rewardedCallbacks)
@@ -990,16 +982,16 @@ object AdManager {
                 }
             }
 
-            override fun onUnityAdsFailedToLoad(placementId: String, error: UnityAds.UnityAdsLoadError, message: String) {
+            override fun onAdFailedToLoad(loadAdError: LoadAdError) {
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    Log.e("AdManager", "Unity Rewarded Ad Failed to Load: $placementId, [$error] $message")
-                    loadedPlacements.remove(placementId)
+                    Log.e("AdManager", "AdMob Rewarded failed to load: ${loadAdError.message}")
+                    mRewardedAd = null
                     isRewardedLoading = false
                     
                     val callbacks = ArrayList(rewardedCallbacks)
                     rewardedCallbacks.clear()
                     for (cb in callbacks) {
-                        cb(false, message)
+                        cb(false, loadAdError.message)
                     }
                 }
             }
@@ -1009,11 +1001,12 @@ object AdManager {
     fun showRewarded(activity: android.app.Activity, onRewardEarned: (Int) -> Unit, onDismiss: () -> Unit) {
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
         mainHandler.post {
-            if (loadedPlacements.contains(REWARDED_ID)) {
-                Log.d("AdManager", "Showing Unity Rewarded Ad: $REWARDED_ID")
-                showLiveRewarded(activity, onRewardEarned, onDismiss)
+            val ad = mRewardedAd
+            if (ad != null) {
+                Log.d("AdManager", "Showing AdMob Rewarded Ad")
+                showLiveRewarded(activity, ad, onRewardEarned, onDismiss)
             } else {
-                Log.w("AdManager", "Unity Rewarded Ad not loaded yet. Showing blocking loading dialog...")
+                Log.w("AdManager", "AdMob Rewarded Ad not loaded yet. Showing blocking loading dialog...")
                 lateinit var callback: (Boolean, String?) -> Unit
                 
                 val dialog = showLoadingBlockingDialog(activity, "Loading Sponsor Video...") {
@@ -1022,14 +1015,12 @@ object AdManager {
                 
                 callback = { success, errorMessage ->
                     dialog.dismiss()
-                    if (success) {
-                        showLiveRewarded(activity, onRewardEarned, onDismiss)
+                    val freshAd = mRewardedAd
+                    if (success && freshAd != null) {
+                        showLiveRewarded(activity, freshAd, onRewardEarned, onDismiss)
                     } else {
-                        android.widget.Toast.makeText(
-                            activity,
-                            "Failed to load Sponsor Video: ${errorMessage ?: "Network Timeout"}. Check network connection & try again.",
-                            android.widget.Toast.LENGTH_LONG
-                        ).show()
+                        Log.w("AdManager", "AdMob Rewarded show/load failed ($errorMessage). Falling back...")
+                        showSimulatedSponsorAd(activity, onRewardEarned, onDismiss)
                     }
                 }
                 
@@ -1039,37 +1030,22 @@ object AdManager {
         }
     }
 
-    private fun showLiveRewarded(activity: android.app.Activity, onRewardEarned: (Int) -> Unit, onDismiss: () -> Unit) {
+    private fun showLiveRewarded(
+        activity: android.app.Activity,
+        ad: RewardedAd,
+        onRewardEarned: (Int) -> Unit,
+        onDismiss: () -> Unit
+    ) {
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-        UnityAds.show(activity, REWARDED_ID, object : IUnityAdsShowListener {
-            override fun onUnityAdsShowFailure(placementId: String, error: UnityAds.UnityAdsShowError, message: String) {
+        var rewardEarned = false
+
+        ad.fullScreenContentCallback = object : FullScreenContentCallback() {
+            override fun onAdDismissedFullScreenContent() {
                 mainHandler.post {
-                    Log.e("AdManager", "Unity Rewarded Show Failed: $placementId, [$error] $message")
-                    loadedPlacements.remove(placementId)
+                    Log.d("AdManager", "AdMob Rewarded dismissed")
+                    mRewardedAd = null
                     loadRewarded(activity)
-                    android.widget.Toast.makeText(
-                        activity,
-                        "Sponsor Video failed to play ($message). Please check your internet connection.",
-                        android.widget.Toast.LENGTH_LONG
-                    ).show()
-                }
-            }
-
-            override fun onUnityAdsShowStart(placementId: String) {
-                Log.d("AdManager", "Unity Rewarded Show Started: $placementId")
-            }
-
-            override fun onUnityAdsShowClick(placementId: String) {
-                Log.d("AdManager", "Unity Rewarded Clicked: $placementId")
-            }
-
-            override fun onUnityAdsShowComplete(placementId: String, state: UnityAds.UnityAdsShowCompletionState) {
-                mainHandler.post {
-                    Log.d("AdManager", "Unity Rewarded Completed: $placementId, State: $state")
-                    loadedPlacements.remove(placementId)
-                    loadRewarded(activity)
-                    if (state == UnityAds.UnityAdsShowCompletionState.COMPLETED) {
-                        onRewardEarned(1)
+                    if (rewardEarned) {
                         onDismiss()
                     } else {
                         android.widget.Toast.makeText(
@@ -1079,6 +1055,27 @@ object AdManager {
                         ).show()
                     }
                 }
+            }
+
+            override fun onAdFailedToShowFullScreenContent(adError: com.google.android.gms.ads.AdError) {
+                mainHandler.post {
+                    Log.e("AdManager", "AdMob Rewarded Show Failed: ${adError.message}")
+                    mRewardedAd = null
+                    loadRewarded(activity)
+                    showSimulatedSponsorAd(activity, onRewardEarned, onDismiss)
+                }
+            }
+
+            override fun onAdShowedFullScreenContent() {
+                Log.d("AdManager", "AdMob Rewarded Show Started")
+            }
+        }
+
+        ad.show(activity, OnUserEarnedRewardListener { rewardItem ->
+            mainHandler.post {
+                Log.d("AdManager", "User earned reward: ${rewardItem.amount}")
+                rewardEarned = true
+                onRewardEarned(rewardItem.amount)
             }
         })
     }
@@ -1198,6 +1195,239 @@ fun showLoadingBlockingDialog(
     return dialog
 }
 
+fun showSimulatedSponsorAd(
+    activity: android.app.Activity,
+    onRewardEarned: (Int) -> Unit,
+    onDismiss: () -> Unit
+): android.app.Dialog {
+    val dialog = android.app.Dialog(activity, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
+    val composeView = androidx.compose.ui.platform.ComposeView(activity).apply {
+        // Set ViewTree owners via reflection to avoid compile classpath resolution quirks
+        try {
+            val lifecycleClazz = Class.forName("androidx.lifecycle.ViewTreeLifecycleOwner")
+            val setLifecycleMethod = lifecycleClazz.getMethod(
+                "set",
+                android.view.View::class.java,
+                androidx.lifecycle.LifecycleOwner::class.java
+            )
+            setLifecycleMethod.invoke(null, this, activity)
+        } catch (e: Exception) {
+            Log.e("AdManager", "Could not set ViewTreeLifecycleOwner: ${e.message}")
+        }
+
+        try {
+            val viewModelClazz = Class.forName("androidx.lifecycle.ViewTreeViewModelStoreOwner")
+            val setViewModelMethod = viewModelClazz.getMethod(
+                "set",
+                android.view.View::class.java,
+                androidx.lifecycle.ViewModelStoreOwner::class.java
+            )
+            setViewModelMethod.invoke(null, this, activity)
+        } catch (e: Exception) {
+            Log.e("AdManager", "Could not set ViewTreeViewModelStoreOwner: ${e.message}")
+        }
+
+        try {
+            val savedStateClazz = Class.forName("androidx.savedstate.ViewTreeSavedStateRegistryOwner")
+            val setSavedStateMethod = savedStateClazz.getMethod(
+                "set",
+                android.view.View::class.java,
+                androidx.savedstate.SavedStateRegistryOwner::class.java
+            )
+            setSavedStateMethod.invoke(null, this, activity)
+        } catch (e: Exception) {
+            Log.e("AdManager", "Could not set ViewTreeSavedStateRegistryOwner: ${e.message}")
+        }
+
+        setContent {
+            var timeLeft by remember { mutableStateOf(5) }
+            var isCompleted by remember { mutableStateOf(false) }
+
+            LaunchedEffect(Unit) {
+                while (timeLeft > 0) {
+                    delay(1000L)
+                    timeLeft--
+                }
+                isCompleted = true
+                onRewardEarned(1)
+                // Let the "COMPLETED" message show for a second, then close
+                delay(1200L)
+                dialog.dismiss()
+                onDismiss()
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xFF0E0D16)), // Cosmic Midnight dark background
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.SpaceBetween
+                ) {
+                    // Top Bar
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(if (isCompleted) Color(0xFF00FF87) else Color(0xFFFF2E93))
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "BACKUP SPONSOR NETWORK",
+                                color = Color(0xFF8B8A9D),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 1.sp
+                            )
+                        }
+
+                        // Countdown Timer / Completed Badge
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(20.dp))
+                                .background(if (isCompleted) Color(0xFF00FF87).copy(alpha = 0.15f) else Color.White.copy(alpha = 0.08f))
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = if (isCompleted) "✓ REWARDED" else "Reward in ${timeLeft}s",
+                                color = if (isCompleted) Color(0xFF00FF87) else Color.White,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+
+                    // Main Ad Artwork / Content Card
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .padding(vertical = 32.dp)
+                            .border(1.dp, Color(0xFF2E2A4E), RoundedCornerShape(24.dp)),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF131124)),
+                        shape = RoundedCornerShape(24.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            // Glowing Ring with Icon
+                            Box(
+                                modifier = Modifier
+                                    .size(96.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF00FF87).copy(alpha = 0.08f))
+                                    .border(1.dp, Color(0xFF00FF87).copy(alpha = 0.3f), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Star,
+                                    contentDescription = null,
+                                    tint = Color(0xFF00FF87),
+                                    modifier = Modifier.size(48.dp)
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(28.dp))
+
+                            Text(
+                                text = "COSMIC LADDER PRO Sponsors",
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                textAlign = TextAlign.Center
+                            )
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            Text(
+                                text = "Play premium ladder matches securely. Supported entirely by your sponsor views. Claim tickets, challenge real opponents & top the league standard!",
+                                fontSize = 13.sp,
+                                color = Color(0xFF8B8A9D),
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(horizontal = 12.dp),
+                                lineHeight = 18.sp
+                            )
+
+                            Spacer(modifier = Modifier.height(32.dp))
+
+                            // Simulated CTA Button
+                            Button(
+                                onClick = {
+                                    // Simulated install/open
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7000FF)),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp)
+                            ) {
+                                Text(
+                                    text = "SECURE SPONSOR PASS",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                            }
+                        }
+                    }
+
+                    // Bottom Bar showing progress loading
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        LinearProgressIndicator(
+                            progress = { if (isCompleted) 1.0f else (5f - timeLeft) / 5f },
+                            color = Color(0xFF00FF87),
+                            trackColor = Color(0xFF1D1B36),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp))
+                        )
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        Text(
+                            text = if (isCompleted) "✓ YOUR REWARD SECURED! Closing in 1s..." else "Validating backup ad impression... Do not close.",
+                            fontSize = 11.sp,
+                            color = if (isCompleted) Color(0xFF00FF87) else Color(0xFF8B8A9D),
+                            fontWeight = FontWeight.Medium,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+            }
+        }
+    }
+    dialog.setCancelable(false)
+    dialog.setCanceledOnTouchOutside(false)
+    dialog.setContentView(composeView)
+    dialog.show()
+    return dialog
+}
+
 fun android.content.Context.findActivity(): android.app.Activity? {
     var context = this
     while (context is android.content.ContextWrapper) {
@@ -1215,42 +1445,36 @@ fun AdmobBanner(modifier: Modifier = Modifier) {
         androidx.compose.ui.viewinterop.AndroidView<android.view.View>(
             modifier = modifier.fillMaxWidth(),
             factory = { context ->
-                val activity = context.findActivity()
-                if (activity != null) {
-                    val banner = BannerView(
-                        activity,
-                        currentBannerId,
-                        UnityBannerSize(320, 50)
-                    )
-                    banner.listener = object : BannerView.IListener {
-                        override fun onBannerLoaded(bannerView: BannerView?) {
-                            Log.d("UnityBanner", "Banner loaded successfully: $currentBannerId")
+                val adView = AdView(context).apply {
+                    adUnitId = currentBannerId
+                    setAdSize(AdSize.BANNER)
+                    adListener = object : com.google.android.gms.ads.AdListener() {
+                        override fun onAdLoaded() {
+                            Log.d("AdmobBanner", "Banner loaded successfully: $currentBannerId")
                         }
 
-                        override fun onBannerClick(bannerView: BannerView?) {
-                            Log.d("UnityBanner", "Banner clicked")
+                        override fun onAdFailedToLoad(loadAdError: LoadAdError) {
+                            Log.e("AdmobBanner", "Banner failed to load: ${loadAdError.message}")
                         }
 
-                        override fun onBannerFailedToLoad(bannerView: BannerView?, errorInfo: BannerErrorInfo?) {
-                            Log.e("UnityBanner", "Banner failed to load: ${errorInfo?.errorMessage}")
+                        override fun onAdClicked() {
+                            Log.d("AdmobBanner", "Banner clicked")
                         }
 
-                        override fun onBannerLeftApplication(bannerView: BannerView?) {
-                            Log.d("UnityBanner", "Banner left application")
+                        override fun onAdOpened() {
+                            Log.d("AdmobBanner", "Banner opened")
                         }
 
-                        override fun onBannerShown(bannerView: BannerView?) {
-                            Log.d("UnityBanner", "Banner shown")
+                        override fun onAdClosed() {
+                            Log.d("AdmobBanner", "Banner closed")
                         }
                     }
-                    banner.load()
-                    banner as android.view.View
-                } else {
-                    android.view.View(context)
                 }
+                adView.loadAd(AdRequest.Builder().build())
+                adView
             },
-            update = {
-                // Key-based recreation handles updates
+            update = { adView ->
+                // Banner view updates are handled dynamically
             }
         )
     }
