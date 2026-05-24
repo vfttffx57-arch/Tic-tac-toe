@@ -11,7 +11,8 @@ data class PlayerProfile(
     val rankPoints: Int = 1200, // Starts at 1200 LP (Silver IV)
     val wins: Int = 0,
     val losses: Int = 0,
-    val draws: Int = 0
+    val draws: Int = 0,
+    val walletBalance: Double = 10.00
 )
 
 @Entity(tableName = "match_history")
@@ -42,7 +43,7 @@ interface GameDao {
     suspend fun clearMatchHistory()
 }
 
-@Database(entities = [PlayerProfile::class, MatchRecord::class], version = 1, exportSchema = false)
+@Database(entities = [PlayerProfile::class, MatchRecord::class], version = 2, exportSchema = false)
 abstract class GameDatabase : RoomDatabase() {
     abstract fun gameDao(): GameDao
 

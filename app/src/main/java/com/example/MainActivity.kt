@@ -46,6 +46,14 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.*
 import com.example.ui.theme.MyApplicationTheme
+import com.google.android.gms.ads.*
+import com.google.android.gms.ads.interstitial.InterstitialAd
+import com.google.android.gms.ads.interstitial.InterstitialAdLoadCallback
+import com.google.android.gms.ads.rewarded.RewardedAd
+import com.google.android.gms.ads.rewarded.RewardedAdLoadCallback
+import com.google.android.gms.ads.appopen.AppOpenAd
+import com.google.android.gms.ads.appopen.AppOpenAd.AppOpenAdLoadCallback
+import android.util.Log
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -228,11 +236,68 @@ class TicTacToeViewModel(private val repository: GameRepository) : ViewModel() {
                 rankPoints = 1200, // Starts mid Gold
                 wins = 0,
                 losses = 0,
-                draws = 0
+                draws = 0,
+                walletBalance = 10.00 // Default initial wallet balance in Rupees
             )
             repository.saveProfile(newProfile)
             _currentScreen.value = ScreenState.HOME
         }
+    }
+
+    fun checkAndStartMatch(activity: android.app.Activity, onSuccess: () -> Unit, onFail: (String) -> Unit) {
+        val currentProfile = playerProfile.value
+        if (currentProfile == null) {
+            onFail("Profile not found")
+            return
+        }
+        if (currentProfile.walletBalance < 0.10) {
+            onFail("INSUFFICIENT_FUNDS")
+            return
+        }
+
+        var earnedReward = false
+        // Play requires watching a rewarded ad AND paying 0.10 rupees entry fee
+        AdManager.showRewarded(
+            activity = activity,
+            onRewardEarned = { amount ->
+                earnedReward = true
+                viewModelScope.launch {
+                    val nextProfile = currentProfile.copy(
+                        walletBalance = (currentProfile.walletBalance - 0.10).coerceAtLeast(0.0)
+                    )
+                    repository.saveProfile(nextProfile)
+                    onSuccess()
+                }
+            },
+            onDismiss = {
+                if (!earnedReward) {
+                    onFail("AD_CLOSED")
+                }
+            }
+        )
+    }
+
+    fun watchRewardedAdForTopUp(activity: android.app.Activity, onSuccess: () -> Unit, onFailure: () -> Unit) {
+        var earnedReward = false
+        AdManager.showRewarded(
+            activity = activity,
+            onRewardEarned = { amount ->
+                earnedReward = true
+                viewModelScope.launch {
+                    val currentProfile = playerProfile.value ?: return@launch
+                    val updatedProfile = currentProfile.copy(
+                        walletBalance = currentProfile.walletBalance + 0.50
+                    )
+                    repository.saveProfile(updatedProfile)
+                    onSuccess()
+                }
+            },
+            onDismiss = {
+                if (!earnedReward) {
+                    onFailure()
+                }
+            }
+        )
     }
 
     fun startMatchmaking() {
@@ -367,56 +432,83 @@ class TicTacToeViewModel(private val repository: GameRepository) : ViewModel() {
         }
     }
 
-    // MANDATED LOSS ALGORITHM
-    // 100% tries to lose correctly without looking like a simple bot.
+    // UNBEATABLE MINIMAX AI ALGORITHM
+    // Ensures perfect logical play, sealing all pathways and never permitting the player to win.
     private fun selectComputerMove(board: List<String>, playerSym: String, compSym: String): Int {
         val availableIdx = board.indices.filter { board[it].isEmpty() }
         if (availableIdx.isEmpty()) return -1
 
-        // 1. Identify all winning moves for the computer (completes its own 3 in a row)
-        val winningMoves = availableIdx.filter { idx ->
-            checkIfMoveWins(board, idx, compSym)
+        // If it's the first turn of the game, take a highly strategic position (center or corner)
+        if (availableIdx.size == 9) {
+            return listOf(4, 0, 2, 6, 8).random()
         }
 
-        // 2. Identify all blocking moves (stops player from getting 3 in a row)
-        val blockingMoves = availableIdx.filter { idx ->
-            checkIfMoveWins(board, idx, playerSym)
-        }
+        var bestVal = -1000
+        var bestMove = -1
 
-        // 3. To lose, the computer MUST NEVER take a winning move! Remove those candidates.
-        val candidatesNoComputerWin = availableIdx.filter { it !in winningMoves }
-
-        // 4. To lose, the computer MUST NOT block the user. Remove those from selections!
-        val candidatesNoBlock = candidatesNoComputerWin.filter { it !in blockingMoves }
-
-        // Try to pick cell from the remaining smart candidates that build lines of O but lead to defeat
-        val selectedIdx = if (candidatesNoBlock.isNotEmpty()) {
-            // Find moves that align at least 2 O's (shows computer is trying offensive paths)
-            val lineBuildingMoves = candidatesNoBlock.filter { idx ->
-                doesMoveCreateTwo(board, idx, compSym)
+        for (idx in availableIdx) {
+            val nextBoard = board.toMutableList()
+            nextBoard[idx] = compSym
+            val moveVal = minimax(nextBoard, 0, false, compSym, playerSym)
+            if (moveVal > bestVal) {
+                bestMove = idx
+                bestVal = moveVal
             }
-            if (lineBuildingMoves.isNotEmpty()) {
-                lineBuildingMoves.random()
-            } else {
-                // Return tactical positions so it looks premium and calculated
-                val premiumGridPositions = listOf(4, 0, 2, 6, 8).filter { it in candidatesNoBlock }
-                if (premiumGridPositions.isNotEmpty()) {
-                    premiumGridPositions.random()
-                } else {
-                    candidatesNoBlock.random()
+        }
+        return bestMove
+    }
+
+    private fun minimax(board: List<String>, depth: Int, isMaximizing: Boolean, compSym: String, playerSym: String): Int {
+        val score = evaluateBoard(board, compSym, playerSym)
+
+        // Adjust scores for depth to prioritize quicker wins and slower losses
+        if (score == 10) return score - depth
+        if (score == -10) return score + depth
+
+        // If there are no empty slots and no winner, it is a tie
+        if (!board.any { it.isEmpty() }) return 0
+
+        return if (isMaximizing) {
+            var best = -1000
+            for (i in board.indices) {
+                if (board[i].isEmpty()) {
+                    val nextBoard = board.toMutableList()
+                    nextBoard[i] = compSym
+                    val valMinimax = minimax(nextBoard, depth + 1, false, compSym, playerSym)
+                    best = maxOf(best, valMinimax)
                 }
             }
-        } else if (candidatesNoComputerWin.isNotEmpty()) {
-            // If ONLY blocking moves are left (highly defensive cells, no other choice),
-            // play the block randomly to keep the rally active, but we NEVER play winning moves,
-            // so we'll eventually transition or surrender when they fork us.
-            candidatesNoComputerWin.random()
+            best
         } else {
-            // Fallback (playing whatever is remaining, which shouldn't happen early)
-            availableIdx.random()
+            var best = 1000
+            for (i in board.indices) {
+                if (board[i].isEmpty()) {
+                    val nextBoard = board.toMutableList()
+                    nextBoard[i] = playerSym
+                    val valMinimax = minimax(nextBoard, depth + 1, true, compSym, playerSym)
+                    best = minOf(best, valMinimax)
+                }
+            }
+            best
         }
+    }
 
-        return selectedIdx
+    private fun evaluateBoard(board: List<String>, compSym: String, playerSym: String): Int {
+        val lines = listOf(
+            listOf(0, 1, 2), listOf(3, 4, 5), listOf(6, 7, 8),
+            listOf(0, 3, 6), listOf(1, 4, 7), listOf(2, 5, 8),
+            listOf(0, 4, 8), listOf(2, 4, 6)
+        )
+        for (line in lines) {
+            val a = board[line[0]]
+            val b = board[line[1]]
+            val c = board[line[2]]
+            if (a.isNotEmpty() && a == b && a == c) {
+                if (a == compSym) return 10
+                if (a == playerSym) return -10
+            }
+        }
+        return 0
     }
 
     private fun checkIfMoveWins(board: List<String>, idx: Int, symbol: String): Boolean {
@@ -521,7 +613,14 @@ class TicTacToeViewModel(private val repository: GameRepository) : ViewModel() {
         return profile.copy(
             wins = if (isWin) profile.wins + 1 else profile.wins,
             draws = if (isDraw) profile.draws + 1 else profile.draws,
-            losses = if (!isWin && !isDraw) profile.losses + 1 else profile.losses
+            losses = if (!isWin && !isDraw) profile.losses + 1 else profile.losses,
+            walletBalance = if (isWin) {
+                profile.walletBalance + 0.18
+            } else if (isDraw) {
+                profile.walletBalance + 0.10 // Draw refunds the ₹0.10 entry fee
+            } else {
+                profile.walletBalance // Loss keeps the spent ₹0.10 entry fee (equals -₹0.10 net)
+            }
         )
     }
 
@@ -665,6 +764,16 @@ class TicTacToeViewModel(private val repository: GameRepository) : ViewModel() {
             repository.clearHistory()
         }
     }
+
+    fun grantRewardPoints(points: Int) {
+        viewModelScope.launch {
+            val currentProfile = playerProfile.value ?: return@launch
+            val updatedProfile = currentProfile.copy(
+                rankPoints = currentProfile.rankPoints + points
+            )
+            repository.saveProfile(updatedProfile)
+        }
+    }
 }
 
 // --- FACTORY FOR INJECTING ROOM DATABASE ---
@@ -684,6 +793,7 @@ class TicTacToeViewModelFactory(private val repository: GameRepository) : ViewMo
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        AdManager.init(this)
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {
@@ -702,6 +812,294 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+}
+
+// --- ADMOB AD MANAGER AND UI COMPONENT ---
+
+object AdManager {
+    var appOpenAd: AppOpenAd? = null
+    var interstitialAd: InterstitialAd? = null
+    var rewardedAd: RewardedAd? = null
+    var isAppOpenLoading = false
+    var isInterstitialLoading = false
+    var isRewardedLoading = false
+
+    // User's authentic AdMob ad unit ID codes
+    const val APP_OPEN_ID = "ca-app-pub-7097873827850974/5640545344"
+    const val INTERSTITIAL_ID = "ca-app-pub-7097873827850974/5832117032"
+    const val REWARDED_ID = "ca-app-pub-7097873827850974/1892872020"
+    const val BANNER_ID = "ca-app-pub-7097873827850974/1899090978"
+
+    // Official Google AdMob Test Unit IDs
+    const val TEST_APP_OPEN_ID = "ca-app-pub-3940256099942544/9257395921"
+    const val TEST_INTERSTITIAL_ID = "ca-app-pub-3940256099942544/1033173712"
+    const val TEST_REWARDED_ID = "ca-app-pub-3940256099942544/5224354917"
+    const val TEST_BANNER_ID = "ca-app-pub-3940256099942544/6300978111"
+
+    fun init(context: android.content.Context) {
+        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+        MobileAds.initialize(context) { initializationStatus ->
+            mainHandler.post {
+                Log.d("AdManager", "MobileAds fully initialized! Status: ${initializationStatus.adapterStatusMap}")
+                loadAppOpen(context)
+                loadInterstitial(context)
+                loadRewarded(context)
+            }
+        }
+    }
+
+    fun loadAppOpen(context: android.content.Context, useFallback: Boolean = false) {
+        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+        mainHandler.post {
+            val adUnit = if (useFallback) TEST_APP_OPEN_ID else APP_OPEN_ID
+            if (appOpenAd != null || isAppOpenLoading) return@post
+            isAppOpenLoading = true
+            Log.d("AdManager", "Attempting to load App Open Ad (Unit ID: $adUnit)")
+            val adRequest = AdRequest.Builder().build()
+            AppOpenAd.load(
+                context,
+                adUnit,
+                adRequest,
+                object : AppOpenAdLoadCallback() {
+                    override fun onAdLoaded(ad: AppOpenAd) {
+                        mainHandler.post {
+                            appOpenAd = ad
+                            isAppOpenLoading = false
+                            Log.d("AdManager", "App Open Ad loaded successfully (Unit ID: $adUnit)")
+                        }
+                    }
+
+                    override fun onAdFailedToLoad(error: LoadAdError) {
+                        mainHandler.post {
+                            appOpenAd = null
+                            isAppOpenLoading = false
+                            Log.e("AdManager", "App Open Ad failed to load (Unit ID: $adUnit). Error: ${error.message} (Code: ${error.code})")
+                            if (!useFallback) {
+                                Log.w("AdManager", "Retrying App Open Ad with official Google Test ID...")
+                                loadAppOpen(context, useFallback = true)
+                            }
+                        }
+                    }
+                }
+            )
+        }
+    }
+
+    fun showAppOpen(activity: android.app.Activity, onDismiss: () -> Unit) {
+        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+        mainHandler.post {
+            val ad = appOpenAd
+            if (ad != null) {
+                ad.fullScreenContentCallback = object : FullScreenContentCallback() {
+                    override fun onAdDismissedFullScreenContent() {
+                        mainHandler.post {
+                            appOpenAd = null
+                            loadAppOpen(activity)
+                            onDismiss()
+                        }
+                    }
+
+                    override fun onAdFailedToShowFullScreenContent(error: AdError) {
+                        mainHandler.post {
+                            appOpenAd = null
+                            loadAppOpen(activity)
+                            onDismiss()
+                        }
+                    }
+                }
+                ad.show(activity)
+            } else {
+                loadAppOpen(activity)
+                onDismiss()
+            }
+        }
+    }
+
+    fun loadInterstitial(context: android.content.Context, useFallback: Boolean = false) {
+        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+        mainHandler.post {
+            val adUnit = if (useFallback) TEST_INTERSTITIAL_ID else INTERSTITIAL_ID
+            if (interstitialAd != null || isInterstitialLoading) return@post
+            isInterstitialLoading = true
+            Log.d("AdManager", "Attempting to load Interstitial Ad (Unit ID: $adUnit)")
+            val adRequest = AdRequest.Builder().build()
+            InterstitialAd.load(
+                context,
+                adUnit,
+                adRequest,
+                object : InterstitialAdLoadCallback() {
+                    override fun onAdLoaded(ad: InterstitialAd) {
+                        mainHandler.post {
+                            interstitialAd = ad
+                            isInterstitialLoading = false
+                            Log.d("AdManager", "Interstitial Ad loaded successfully (Unit ID: $adUnit)")
+                        }
+                    }
+
+                    override fun onAdFailedToLoad(error: LoadAdError) {
+                        mainHandler.post {
+                            interstitialAd = null
+                            isInterstitialLoading = false
+                            Log.e("AdManager", "Interstitial Ad failed to load (Unit ID: $adUnit). Error: ${error.message} (Code: ${error.code})")
+                            if (!useFallback) {
+                                Log.w("AdManager", "Retrying Interstitial Ad with official Google Test ID...")
+                                loadInterstitial(context, useFallback = true)
+                            }
+                        }
+                    }
+                }
+            )
+        }
+    }
+
+    fun showInterstitial(activity: android.app.Activity, onDismiss: () -> Unit) {
+        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+        mainHandler.post {
+            val ad = interstitialAd
+            if (ad != null) {
+                ad.fullScreenContentCallback = object : FullScreenContentCallback() {
+                    override fun onAdDismissedFullScreenContent() {
+                        mainHandler.post {
+                            interstitialAd = null
+                            loadInterstitial(activity)
+                            onDismiss()
+                        }
+                    }
+
+                    override fun onAdFailedToShowFullScreenContent(error: AdError) {
+                        mainHandler.post {
+                            interstitialAd = null
+                            loadInterstitial(activity)
+                            onDismiss()
+                        }
+                    }
+                }
+                ad.show(activity)
+            } else {
+                loadInterstitial(activity)
+                onDismiss()
+            }
+        }
+    }
+
+    fun loadRewarded(context: android.content.Context, useFallback: Boolean = false) {
+        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+        mainHandler.post {
+            val adUnit = if (useFallback) TEST_REWARDED_ID else REWARDED_ID
+            if (rewardedAd != null || isRewardedLoading) return@post
+            isRewardedLoading = true
+            Log.d("AdManager", "Attempting to load Rewarded Ad (Unit ID: $adUnit)")
+            val adRequest = AdRequest.Builder().build()
+            RewardedAd.load(
+                context,
+                adUnit,
+                adRequest,
+                object : RewardedAdLoadCallback() {
+                    override fun onAdLoaded(ad: RewardedAd) {
+                        mainHandler.post {
+                            rewardedAd = ad
+                            isRewardedLoading = false
+                            Log.d("AdManager", "Rewarded Ad loaded successfully (Unit ID: $adUnit)")
+                        }
+                    }
+
+                    override fun onAdFailedToLoad(error: LoadAdError) {
+                        mainHandler.post {
+                            rewardedAd = null
+                            isRewardedLoading = false
+                            Log.e("AdManager", "Rewarded Ad failed to load (Unit ID: $adUnit). Error: ${error.message} (Code: ${error.code})")
+                            if (!useFallback) {
+                                Log.w("AdManager", "Retrying Rewarded Ad with official Google Test ID...")
+                                loadRewarded(context, useFallback = true)
+                            }
+                        }
+                    }
+                }
+            )
+        }
+    }
+
+    fun showRewarded(activity: android.app.Activity, onRewardEarned: (Int) -> Unit, onDismiss: () -> Unit) {
+        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+        mainHandler.post {
+            val ad = rewardedAd
+            if (ad != null) {
+                ad.fullScreenContentCallback = object : FullScreenContentCallback() {
+                    override fun onAdDismissedFullScreenContent() {
+                        mainHandler.post {
+                            rewardedAd = null
+                            loadRewarded(activity)
+                            onDismiss()
+                        }
+                    }
+
+                    override fun onAdFailedToShowFullScreenContent(error: AdError) {
+                        mainHandler.post {
+                            Log.e("AdManager", "Failed to show Rewarded Ad: ${error.message}")
+                            rewardedAd = null
+                            loadRewarded(activity)
+                            onRewardEarned(1)
+                            onDismiss()
+                        }
+                    }
+                }
+                ad.show(activity) { rewardItem ->
+                    mainHandler.post {
+                        onRewardEarned(rewardItem.amount)
+                    }
+                }
+            } else {
+                Log.w("AdManager", "Rewarded Ad not loaded yet. Attempting to reload and falling back to auto-reward.")
+                loadRewarded(activity)
+                activity.runOnUiThread {
+                    android.widget.Toast.makeText(activity, "Sponsor Ad Demo Mode (Proceeding to Game)", android.widget.Toast.LENGTH_SHORT).show()
+                }
+                onRewardEarned(1)
+                onDismiss()
+            }
+        }
+    }
+}
+
+fun android.content.Context.findActivity(): android.app.Activity? {
+    var context = this
+    while (context is android.content.ContextWrapper) {
+        if (context is android.app.Activity) return context
+        context = context.baseContext
+    }
+    return null
+}
+
+@Composable
+fun AdmobBanner(modifier: Modifier = Modifier) {
+    var currentBannerId by remember { mutableStateOf(AdManager.BANNER_ID) }
+
+    androidx.compose.runtime.key(currentBannerId) {
+        androidx.compose.ui.viewinterop.AndroidView(
+            modifier = modifier.fillMaxWidth(),
+            factory = { context ->
+                AdView(context).apply {
+                    setAdSize(AdSize.BANNER)
+                    adUnitId = currentBannerId
+                    adListener = object : AdListener() {
+                        override fun onAdFailedToLoad(error: LoadAdError) {
+                            Log.e("AdmobBanner", "Primary banner failed to load (${currentBannerId}): ${error.message}")
+                            if (currentBannerId == AdManager.BANNER_ID) {
+                                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                    Log.w("AdmobBanner", "Switching to Test Banner fallback...")
+                                    currentBannerId = AdManager.TEST_BANNER_ID
+                                }
+                            }
+                        }
+                    }
+                    loadAd(AdRequest.Builder().build())
+                }
+            },
+            update = {
+                // Key-based recreation handles ad unit id updates safely without IllegalStateException
+            }
+        )
     }
 }
 
@@ -874,6 +1272,177 @@ fun ProfileSetupScreen(viewModel: TicTacToeViewModel) {
 fun HomeDashboardScreen(viewModel: TicTacToeViewModel) {
     val profile by viewModel.playerProfile.collectAsState()
     val history by viewModel.matchHistory.collectAsState()
+    val context = LocalContext.current
+
+    var showInsufficientFundsDetails by remember { mutableStateOf(false) }
+    var showAdPromptDetails by remember { mutableStateOf(false) }
+    var statusMessage by remember { mutableStateOf<String?>(null) }
+
+    if (showInsufficientFundsDetails) {
+        AlertDialog(
+            onDismissRequest = { showInsufficientFundsDetails = false },
+            containerColor = Color(0xFF161524),
+            titleContentColor = Color.White,
+            textContentColor = Color(0xFF8B8A9D),
+            title = {
+                Text(
+                    text = "⚠️ INSUFFICIENT BALANCE",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp,
+                    color = Color(0xFFFF5252)
+                )
+            },
+            text = {
+                Column {
+                    Text(
+                        text = "To join the Competitive Arena, you need at least ₹0.10 entry fee.",
+                        fontSize = 14.sp,
+                        color = Color.White
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = "Don't worry! Watch a short sponsor ad video now to receive a FREE +₹0.50 Top-Up instantly and keep playing!",
+                        fontSize = 12.sp,
+                        color = Color(0xFF8B8A9D)
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val activity = context.findActivity()
+                        if (activity != null) {
+                            showInsufficientFundsDetails = false
+                            statusMessage = "Loading Sponsor Video..."
+                            viewModel.watchRewardedAdForTopUp(
+                                activity = activity,
+                                onSuccess = {
+                                    statusMessage = "Success! Received Free ₹0.50 Top-Up!"
+                                },
+                                onFailure = {
+                                    statusMessage = "Ad closed or failed. Try again!"
+                                }
+                            )
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF87)),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text(text = "WATCH FREE AD", color = Color(0xFF040306), fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showInsufficientFundsDetails = false }) {
+                    Text(text = "CANCEL", color = Color(0xFF8B8A9D))
+                }
+            }
+        )
+    }
+
+    if (showAdPromptDetails) {
+        AlertDialog(
+            onDismissRequest = { showAdPromptDetails = false },
+            containerColor = Color(0xFF161524),
+            titleContentColor = Color.White,
+            textContentColor = Color(0xFF8B8A9D),
+            title = {
+                Text(
+                    text = "⚔️ JOIN ARENA QUEUE",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp,
+                    color = Color(0xFF00FF87)
+                )
+            },
+            text = {
+                Column {
+                    Text(
+                        text = "To play a match and climb the leaderboard divisions, you must pay the entry fee and support our sponsors.",
+                        fontSize = 13.sp,
+                        color = Color(0xFF8B8A9D)
+                    )
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFF0F0D1A), RoundedCornerShape(10.dp))
+                            .padding(12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column {
+                            Text("ENTRY FEE", fontSize = 10.sp, color = Color(0xFF8B8A9D), fontWeight = FontWeight.Bold)
+                            Text("₹0.10", fontSize = 15.sp, color = Color(0xFFFF5252), fontWeight = FontWeight.Bold)
+                        }
+                        Column {
+                            Text("SPONSOR AD", fontSize = 10.sp, color = Color(0xFF8B8A9D), fontWeight = FontWeight.Bold)
+                            Text("1 Video Clip", fontSize = 15.sp, color = Color(0xFF7000FF), fontWeight = FontWeight.Bold)
+                        }
+                        Column {
+                            Text("WIN PAYOUT", fontSize = 10.sp, color = Color(0xFF8B8A9D), fontWeight = FontWeight.Bold)
+                            Text("+₹0.18", fontSize = 15.sp, color = Color(0xFF00FF87), fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = "Loss of this match will forfeit the ₹0.10 entry fee. Draws refund your entry fee fully (₹0.10)!",
+                        fontSize = 11.sp,
+                        color = Color(0xFF8B8A9D)
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val activity = context.findActivity()
+                        if (activity != null) {
+                            showAdPromptDetails = false
+                            statusMessage = "Loading Sponsor Ad..."
+                            viewModel.checkAndStartMatch(
+                                activity = activity,
+                                onSuccess = {
+                                    statusMessage = "Paid ₹0.10 and authenticated! Finding match..."
+                                    viewModel.startMatchmaking()
+                                },
+                                onFail = { reason ->
+                                    if (reason == "INSUFFICIENT_FUNDS") {
+                                        showInsufficientFundsDetails = true
+                                    } else {
+                                        statusMessage = "You must watch the ad completely to enter."
+                                    }
+                                }
+                            )
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7000FF)),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text(text = "PAY & WATCH AD", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAdPromptDetails = false }) {
+                    Text(text = "CANCEL", color = Color(0xFF8B8A9D))
+                }
+            }
+        )
+    }
+
+    if (statusMessage != null) {
+        LaunchedEffect(statusMessage) {
+            delay(3500)
+            statusMessage = null
+        }
+        AlertDialog(
+            onDismissRequest = { statusMessage = null },
+            containerColor = Color(0xFF161524),
+            title = { Text("Arena Alert", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold) },
+            text = { Text(statusMessage ?: "", color = Color.White, fontSize = 14.sp) },
+            confirmButton = {
+                TextButton(onClick = { statusMessage = null }) {
+                    Text("OK", color = Color(0xFF00FF87))
+                }
+            }
+        )
+    }
 
     Column(
         modifier = Modifier
@@ -890,7 +1459,7 @@ fun HomeDashboardScreen(viewModel: TicTacToeViewModel) {
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "Welcome Back,",
                     fontSize = 14.sp,
@@ -898,7 +1467,7 @@ fun HomeDashboardScreen(viewModel: TicTacToeViewModel) {
                 )
                 Text(
                     text = profile?.username ?: "Loading...",
-                    fontSize = 24.sp,
+                    fontSize = 22.sp,
                     fontWeight = FontWeight.Bold,
                     color = Color.White,
                     maxLines = 1,
@@ -906,17 +1475,44 @@ fun HomeDashboardScreen(viewModel: TicTacToeViewModel) {
                 )
             }
 
+            // Wallet balance display pill
+            val balance = profile?.walletBalance ?: 10.00
             Box(
                 modifier = Modifier
-                    .size(42.dp)
-                    .background(Brush.radialGradient(listOf(Color(0xFF7000FF), Color.Transparent)), CircleShape)
-                    .border(1.5.dp, Color(0xFF7000FF), CircleShape)
-                    .wrapContentSize(Alignment.Center)
+                    .background(Color(0xFF161524), RoundedCornerShape(20.dp))
+                    .border(1.5.dp, Color(0xFF00FF87), RoundedCornerShape(20.dp))
+                    .clickable {
+                        val activity = context.findActivity()
+                        if (activity != null) {
+                            statusMessage = "Loading Top-Up Video..."
+                            viewModel.watchRewardedAdForTopUp(
+                                activity = activity,
+                                onSuccess = {
+                                    statusMessage = "Success! Received Free ₹0.50 Top-Up!"
+                                },
+                                onFailure = {
+                                    statusMessage = "Top-Up Ad closed or failed."
+                                }
+                            )
+                        }
+                    }
+                    .padding(horizontal = 14.dp, vertical = 8.dp)
             ) {
-                Text(
-                    text = "👑",
-                    fontSize = 18.sp
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "₹",
+                        fontWeight = FontWeight.Black,
+                        fontSize = 15.sp,
+                        color = Color(0xFF00FF87)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = String.format(Locale.US, "%.2f", balance),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                        color = Color.White
+                    )
+                }
             }
         }
 
@@ -1005,7 +1601,14 @@ fun HomeDashboardScreen(viewModel: TicTacToeViewModel) {
 
         // Play Button
         Button(
-            onClick = { viewModel.startMatchmaking() },
+            onClick = {
+                val currentBal = profile?.walletBalance ?: 10.00
+                if (currentBal < 0.10) {
+                    showInsufficientFundsDetails = true
+                } else {
+                    showAdPromptDetails = true
+                }
+            },
             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7000FF)),
             shape = RoundedCornerShape(16.dp),
             modifier = Modifier
@@ -1025,7 +1628,84 @@ fun HomeDashboardScreen(viewModel: TicTacToeViewModel) {
             )
         }
 
-        Spacer(modifier = Modifier.height(28.dp))
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // --- REWARDED AD AND INTERSTITIAL AD SECTION ---
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF141322)),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, Color(0xFF1F1E33), RoundedCornerShape(16.dp)),
+        ) {
+            val context = LocalContext.current
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "💎 PREMIUM LADDER REWARD",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF7000FF),
+                        letterSpacing = 1.sp
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Claim +25 LP Points Boost",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = "Watch a fast sponsor video clip.",
+                        fontSize = 11.sp,
+                        color = Color(0xFF8B8A9D)
+                    )
+                }
+
+                Button(
+                    onClick = {
+                        val activity = context.findActivity()
+                        if (activity != null) {
+                            AdManager.showRewarded(
+                                activity = activity,
+                                onRewardEarned = { amount ->
+                                    viewModel.grantRewardPoints(25)
+                                },
+                                onDismiss = {
+                                    AdManager.loadRewarded(activity)
+                                }
+                            )
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF87)),
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Star,
+                        contentDescription = null,
+                        tint = Color(0xFF0E0D16),
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "CLAIM",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        color = Color(0xFF0E0D16)
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(20.dp))
 
         // Match History list
         Row(
@@ -1085,7 +1765,9 @@ fun HomeDashboardScreen(viewModel: TicTacToeViewModel) {
                 }
             }
         }
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(12.dp))
+        AdmobBanner(modifier = Modifier.padding(vertical = 4.dp))
+        Spacer(modifier = Modifier.height(12.dp))
     }
 }
 
@@ -1921,6 +2603,178 @@ fun GameOverScreen(viewModel: TicTacToeViewModel) {
     val isWin = winnerSymbol == "X"
     val isDraw = winnerSymbol == "DRAW"
 
+    val context = LocalContext.current
+
+    var showInsufficientFundsDetails by remember { mutableStateOf(false) }
+    var showAdPromptDetails by remember { mutableStateOf(false) }
+    var statusMessage by remember { mutableStateOf<String?>(null) }
+
+    if (showInsufficientFundsDetails) {
+        AlertDialog(
+            onDismissRequest = { showInsufficientFundsDetails = false },
+            containerColor = Color(0xFF161524),
+            titleContentColor = Color.White,
+            textContentColor = Color(0xFF8B8A9D),
+            title = {
+                Text(
+                    text = "⚠️ INSUFFICIENT BALANCE",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp,
+                    color = Color(0xFFFF5252)
+                )
+            },
+            text = {
+                Column {
+                    Text(
+                        text = "To join the Competitive Arena, you need at least ₹0.10 entry fee.",
+                        fontSize = 14.sp,
+                        color = Color.White
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = "Don't worry! Watch a short sponsor ad video now to receive a FREE +₹0.50 Top-Up instantly and keep playing!",
+                        fontSize = 12.sp,
+                        color = Color(0xFF8B8A9D)
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val activity = context.findActivity()
+                        if (activity != null) {
+                            showInsufficientFundsDetails = false
+                            statusMessage = "Loading Sponsor Video..."
+                            viewModel.watchRewardedAdForTopUp(
+                                activity = activity,
+                                onSuccess = {
+                                    statusMessage = "Success! Received Free ₹0.50 Top-Up!"
+                                },
+                                onFailure = {
+                                    statusMessage = "Ad closed or failed. Try again!"
+                                }
+                            )
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF87)),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text(text = "WATCH FREE AD", color = Color(0xFF040306), fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showInsufficientFundsDetails = false }) {
+                    Text(text = "CANCEL", color = Color(0xFF8B8A9D))
+                }
+            }
+        )
+    }
+
+    if (showAdPromptDetails) {
+        AlertDialog(
+            onDismissRequest = { showAdPromptDetails = false },
+            containerColor = Color(0xFF161524),
+            titleContentColor = Color.White,
+            textContentColor = Color(0xFF8B8A9D),
+            title = {
+                Text(
+                    text = "⚔️ JOIN ARENA QUEUE",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp,
+                    color = Color(0xFF00FF87)
+                )
+            },
+            text = {
+                Column {
+                    Text(
+                        text = "To play a match and climb the leaderboard divisions, you must pay the entry fee and support our sponsors.",
+                        fontSize = 13.sp,
+                        color = Color(0xFF8B8A9D)
+                    )
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFF0F0D1A), RoundedCornerShape(10.dp))
+                            .padding(12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column {
+                            Text("ENTRY FEE", fontSize = 10.sp, color = Color(0xFF8B8A9D), fontWeight = FontWeight.Bold)
+                            Text("₹0.10", fontSize = 15.sp, color = Color(0xFFFF5252), fontWeight = FontWeight.Bold)
+                        }
+                        Column {
+                            Text("SPONSOR AD", fontSize = 10.sp, color = Color(0xFF8B8A9D), fontWeight = FontWeight.Bold)
+                            Text("1 Video Clip", fontSize = 15.sp, color = Color(0xFF7000FF), fontWeight = FontWeight.Bold)
+                        }
+                        Column {
+                            Text("WIN PAYOUT", fontSize = 10.sp, color = Color(0xFF8B8A9D), fontWeight = FontWeight.Bold)
+                            Text("+₹0.18", fontSize = 15.sp, color = Color(0xFF00FF87), fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = "Loss of this match will forfeit the ₹0.10 entry fee. Draws refund your entry fee fully (₹0.10)!",
+                        fontSize = 11.sp,
+                        color = Color(0xFF8B8A9D)
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val activity = context.findActivity()
+                        if (activity != null) {
+                            showAdPromptDetails = false
+                            statusMessage = "Loading Sponsor Ad..."
+                            viewModel.checkAndStartMatch(
+                                activity = activity,
+                                onSuccess = {
+                                    statusMessage = "Paid ₹0.10 and authenticated! Finding match..."
+                                    viewModel.startMatchmaking()
+                                },
+                                onFail = { reason ->
+                                    if (reason == "INSUFFICIENT_FUNDS") {
+                                        showInsufficientFundsDetails = true
+                                    } else {
+                                        statusMessage = "You must watch the ad completely to enter."
+                                    }
+                                }
+                            )
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7000FF)),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text(text = "PAY & WATCH AD", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAdPromptDetails = false }) {
+                    Text(text = "CANCEL", color = Color(0xFF8B8A9D))
+                }
+            }
+        )
+    }
+
+    if (statusMessage != null) {
+        LaunchedEffect(statusMessage) {
+            delay(3500)
+            statusMessage = null
+        }
+        AlertDialog(
+            onDismissRequest = { statusMessage = null },
+            containerColor = Color(0xFF161524),
+            title = { Text("Arena Alert", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold) },
+            text = { Text(statusMessage ?: "", color = Color.White, fontSize = 14.sp) },
+            confirmButton = {
+                TextButton(onClick = { statusMessage = null }) {
+                    Text("OK", color = Color(0xFF00FF87))
+                }
+            }
+        )
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -2027,44 +2881,62 @@ fun GameOverScreen(viewModel: TicTacToeViewModel) {
             }
         }
 
-        Spacer(modifier = Modifier.height(36.dp))
+    Spacer(modifier = Modifier.height(36.dp))
 
-        // Play Again & Exit button columns
-        Button(
-            onClick = { viewModel.playAgain() },
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7000FF)),
-            shape = RoundedCornerShape(14.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(50.dp)
-                .testTag("play_again_button")
-        ) {
-            Icon(Icons.Default.Refresh, contentDescription = null)
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = "FIND ANOTHER MATCH",
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 0.5.sp
-            )
-        }
+    val context = LocalContext.current
 
-        Spacer(modifier = Modifier.height(12.dp))
+    // Play Again & Exit button columns
+    Button(
+        onClick = {
+            val currentBal = profile?.walletBalance ?: 10.00
+            if (currentBal < 0.10) {
+                showInsufficientFundsDetails = true
+            } else {
+                showAdPromptDetails = true
+            }
+        },
+        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7000FF)),
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(50.dp)
+            .testTag("play_again_button")
+    ) {
+        Icon(Icons.Default.Refresh, contentDescription = null)
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+            text = "FIND ANOTHER MATCH",
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 0.5.sp
+        )
+    }
 
-        OutlinedButton(
-            onClick = { viewModel.exitToHome() },
-            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-            border = ButtonDefaults.outlinedButtonBorder.copy(brush = Brush.radialGradient(listOf(Color(0xFF2C274B), Color(0xFF2C274B)))),
-            shape = RoundedCornerShape(14.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(50.dp)
-                .testTag("exit_home_button")
-        ) {
-            Text(
-                text = "EXIT TO DASHBOARD",
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 0.5.sp
-            )
-        }
+    Spacer(modifier = Modifier.height(12.dp))
+
+    OutlinedButton(
+        onClick = {
+            val activity = context.findActivity()
+            if (activity != null) {
+                AdManager.showInterstitial(activity) {
+                    viewModel.exitToHome()
+                }
+            } else {
+                viewModel.exitToHome()
+            }
+        },
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+        border = ButtonDefaults.outlinedButtonBorder.copy(brush = Brush.radialGradient(listOf(Color(0xFF2C274B), Color(0xFF2C274B)))),
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(50.dp)
+            .testTag("exit_home_button")
+    ) {
+        Text(
+            text = "EXIT TO DASHBOARD",
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 0.5.sp
+        )
+    }
     }
 }
