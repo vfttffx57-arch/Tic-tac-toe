@@ -19,10 +19,7 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.MyApplication">
 
-        <!-- AdMob Google Mobile Ads App ID (using official sample/test ID) -->
-        <meta-data
-            android:name="com.google.android.gms.ads.APPLICATION_ID"
-            android:value="ca-app-pub-7097873827850974~4193704521" />
+        <!-- InMobi integrations do not need special meta-data in the manifest -->
 
 
 

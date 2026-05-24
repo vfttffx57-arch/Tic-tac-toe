@@ -48,17 +48,13 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.*
 import com.example.ui.theme.MyApplicationTheme
-import com.google.android.gms.ads.MobileAds
-import com.google.android.gms.ads.AdRequest
-import com.google.android.gms.ads.AdView
-import com.google.android.gms.ads.AdSize
-import com.google.android.gms.ads.LoadAdError
-import com.google.android.gms.ads.interstitial.InterstitialAd
-import com.google.android.gms.ads.interstitial.InterstitialAdLoadCallback
-import com.google.android.gms.ads.rewarded.RewardedAd
-import com.google.android.gms.ads.rewarded.RewardedAdLoadCallback
-import com.google.android.gms.ads.OnUserEarnedRewardListener
-import com.google.android.gms.ads.FullScreenContentCallback
+import com.inmobi.sdk.InMobiSdk
+import com.inmobi.sdk.SdkInitializationListener
+import com.inmobi.ads.InMobiInterstitial
+import com.inmobi.ads.listeners.InterstitialAdEventListener
+import com.inmobi.ads.InMobiAdRequestStatus
+import com.inmobi.ads.AdMetaInfo
+import org.json.JSONObject
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -748,104 +744,183 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// --- GOOGLE ADMOB AD MANAGER ---
+// --- INMOBI AD MANAGER ---
 object AdManager {
-    var BANNER_ID = ""
-    var INTERSTITIAL_ID = "ca-app-pub-7097873827850974/5832117032"
-    var REWARDED_ID = "ca-app-pub-7097873827850974/6117004753"
+    var APP_KEY = "1000200331"
+    var INTERSTITIAL_PLACEMENT_ID = 10000707230L
+    var REWARDED_PLACEMENT_ID = 10000707229L
 
     var isInitialized = false
     var isRewardedLoading = false
-    private var mRewardedAd: RewardedAd? = null
+    private var mRewardedAd: InMobiInterstitial? = null
 
     var isInterstitialLoading = false
-    private var mInterstitialAd: InterstitialAd? = null
+    private var mInterstitialAd: InMobiInterstitial? = null
+
+    private var currentInterstitialDismissCallback: (() -> Unit)? = null
+
+    private var currentRewardDismissCallback: (() -> Unit)? = null
+    private var currentRewardEarned = false
 
     fun init(context: android.content.Context) {
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-        Log.d("AdManager", "Initializing Google Mobile Ads")
+        Log.d("AdManager", "Initializing InMobi SDK with Account: $APP_KEY")
         try {
-            MobileAds.initialize(context) {
-                mainHandler.post {
-                    isInitialized = true
-                    Log.d("AdManager", "Initialization complete")
-                    loadRewarded(context)
-                    loadInterstitial(context)
+            val consentObject = JSONObject()
+            InMobiSdk.init(context, APP_KEY, consentObject, object : SdkInitializationListener {
+                override fun onInitializationComplete(error: java.lang.Error?) {
+                    mainHandler.post {
+                        if (error == null) {
+                            isInitialized = true
+                            Log.d("AdManager", "InMobi initialization complete")
+                            loadRewarded(context)
+                            loadInterstitial(context)
+                        } else {
+                            Log.e("AdManager", "InMobi initialization failed: ${error.message}")
+                        }
+                    }
                 }
-            }
+            })
         } catch (e: Exception) {
             Log.e("AdManager", "Init crash: ${e.message}")
         }
     }
 
     fun loadRewarded(context: android.content.Context) {
-        if (isRewardedLoading) return
+        if (isRewardedLoading || mRewardedAd != null) return
         isRewardedLoading = true
-        val adRequest = AdRequest.Builder().build()
-        RewardedAd.load(context, REWARDED_ID, adRequest, object : RewardedAdLoadCallback() {
-            override fun onAdLoaded(rewardedAd: RewardedAd) {
-                mRewardedAd = rewardedAd
-                isRewardedLoading = false
-                Log.d("AdManager", "Admob Rewarded loaded successfully")
-            }
+        Log.d("AdManager", "Loading InMobi Rewarded...")
 
-            override fun onAdFailedToLoad(loadAdError: LoadAdError) {
-                mRewardedAd = null
+        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+        mainHandler.post {
+            try {
+                mRewardedAd = InMobiInterstitial(context, REWARDED_PLACEMENT_ID, object : InterstitialAdEventListener() {
+                    override fun onAdFetchSuccessful(ad: InMobiInterstitial, info: AdMetaInfo) {
+                        Log.d("AdManager", "InMobi Rewarded fetch successful")
+                    }
+
+                    override fun onAdLoadSucceeded(ad: InMobiInterstitial, info: AdMetaInfo) {
+                        isRewardedLoading = false
+                        Log.d("AdManager", "InMobi Rewarded loaded successfully")
+                    }
+
+                    override fun onAdLoadFailed(ad: InMobiInterstitial, status: InMobiAdRequestStatus) {
+                        mRewardedAd = null
+                        isRewardedLoading = false
+                        Log.e("AdManager", "InMobi Rewarded failed to load: ${status.message}")
+                    }
+
+                    override fun onAdDismissed(ad: InMobiInterstitial) {
+                        mRewardedAd = null
+                        loadRewarded(context)
+
+                        val earned = currentRewardEarned
+                        val dismiss = currentRewardDismissCallback
+
+                        currentRewardDismissCallback = null
+                        currentRewardEarned = false
+
+                        if (earned) {
+                            dismiss?.invoke()
+                        } else {
+                            val act = context.findActivity()
+                            if (act != null) {
+                                showSimulatedSponsorAd(act, {}, dismiss ?: {})
+                            } else {
+                                dismiss?.invoke()
+                            }
+                        }
+                    }
+
+                    override fun onAdRewardActionCompleted(ad: InMobiInterstitial, rewards: Map<Any, Any>?) {
+                        Log.d("AdManager", "InMobi reward earned callback: $rewards")
+                        currentRewardEarned = true
+                    }
+
+                    override fun onAdDisplayFailed(ad: InMobiInterstitial) {
+                        mRewardedAd = null
+                        isRewardedLoading = false
+                        Log.e("AdManager", "InMobi Rewarded display failed")
+
+                        val dismiss = currentRewardDismissCallback
+                        currentRewardDismissCallback = null
+                        currentRewardEarned = false
+
+                        val act = context.findActivity()
+                        if (act != null) {
+                            showSimulatedSponsorAd(act, {}, dismiss ?: {})
+                        } else {
+                            dismiss?.invoke()
+                        }
+                    }
+                })
+                mRewardedAd?.load()
+            } catch (e: Exception) {
                 isRewardedLoading = false
-                Log.e("AdManager", "Admob Rewarded failed to load: ${loadAdError.message}")
+                Log.e("AdManager", "Error creating InMobi Rewarded banner/interstitial: ${e.message}")
             }
-        })
+        }
     }
 
     fun loadInterstitial(context: android.content.Context) {
         if (isInterstitialLoading || mInterstitialAd != null) return
         isInterstitialLoading = true
-        val adRequest = AdRequest.Builder().build()
-        InterstitialAd.load(context, INTERSTITIAL_ID, adRequest, object : InterstitialAdLoadCallback() {
-            override fun onAdLoaded(interstitialAd: InterstitialAd) {
-                mInterstitialAd = interstitialAd
-                isInterstitialLoading = false
-                Log.d("AdManager", "Admob Interstitial loaded successfully")
-            }
+        Log.d("AdManager", "Loading InMobi Interstitial...")
 
-            override fun onAdFailedToLoad(loadAdError: LoadAdError) {
-                mInterstitialAd = null
+        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+        mainHandler.post {
+            try {
+                mInterstitialAd = InMobiInterstitial(context, INTERSTITIAL_PLACEMENT_ID, object : InterstitialAdEventListener() {
+                    override fun onAdFetchSuccessful(ad: InMobiInterstitial, info: AdMetaInfo) {
+                        Log.d("AdManager", "InMobi Interstitial fetch successful")
+                    }
+
+                    override fun onAdLoadSucceeded(ad: InMobiInterstitial, info: AdMetaInfo) {
+                        isInterstitialLoading = false
+                        Log.d("AdManager", "InMobi Interstitial loaded successfully")
+                    }
+
+                    override fun onAdLoadFailed(ad: InMobiInterstitial, status: InMobiAdRequestStatus) {
+                        mInterstitialAd = null
+                        isInterstitialLoading = false
+                        Log.e("AdManager", "InMobi Interstitial failed to load: ${status.message}")
+                    }
+
+                    override fun onAdDismissed(ad: InMobiInterstitial) {
+                        mInterstitialAd = null
+                        loadInterstitial(context)
+                        currentInterstitialDismissCallback?.invoke()
+                        currentInterstitialDismissCallback = null
+                    }
+
+                    override fun onAdDisplayFailed(ad: InMobiInterstitial) {
+                        mInterstitialAd = null
+                        isInterstitialLoading = false
+                        Log.e("AdManager", "InMobi Interstitial display failed")
+                        currentInterstitialDismissCallback?.invoke()
+                        currentInterstitialDismissCallback = null
+                    }
+                })
+                mInterstitialAd?.load()
+            } catch (e: Exception) {
                 isInterstitialLoading = false
-                Log.e("AdManager", "Admob Interstitial failed to load: ${loadAdError.message}")
+                Log.e("AdManager", "Error creating InMobi Interstitial: ${e.message}")
             }
-        })
+        }
     }
 
     fun showRewarded(activity: android.app.Activity, onRewardEarned: (Int) -> Unit, onDismiss: () -> Unit) {
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
         mainHandler.post {
             val ad = mRewardedAd
-            if (ad != null) {
-                var rewardGiven = false
-                ad.fullScreenContentCallback = object : FullScreenContentCallback() {
-                    override fun onAdDismissedFullScreenContent() {
-                        mRewardedAd = null
-                        loadRewarded(activity)
-                        if (rewardGiven) {
-                            onDismiss()
-                        } else {
-                            // User skipped/closed ad -> Backup Simulated
-                            showSimulatedSponsorAd(activity, onRewardEarned, onDismiss)
-                        }
-                    }
-
-                    override fun onAdFailedToShowFullScreenContent(adError: com.google.android.gms.ads.AdError) {
-                        mRewardedAd = null
-                        loadRewarded(activity)
-                        showSimulatedSponsorAd(activity, onRewardEarned, onDismiss)
-                    }
-                }
-                ad.show(activity, OnUserEarnedRewardListener { rewardItem ->
-                    rewardGiven = true
-                    onRewardEarned(rewardItem.amount)
-                })
+            if (ad != null && ad.isReady) {
+                currentRewardDismissCallback = onDismiss
+                currentRewardEarned = false
+                ad.show()
+                onRewardEarned(10)
             } else {
-                // If live AdMob not cached/ready, show backup 5-sec sponsoring Dialog immediately!
+                Log.d("AdManager", "InMobi Rewarded not ready, trying to reload and showing backup simulated ad")
+                loadRewarded(activity)
                 showSimulatedSponsorAd(activity, onRewardEarned, onDismiss)
             }
         }
@@ -855,23 +930,11 @@ object AdManager {
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
         mainHandler.post {
             val ad = mInterstitialAd
-            if (ad != null) {
-                ad.fullScreenContentCallback = object : FullScreenContentCallback() {
-                    override fun onAdDismissedFullScreenContent() {
-                        mInterstitialAd = null
-                        loadInterstitial(activity)
-                        onDismiss()
-                    }
-
-                    override fun onAdFailedToShowFullScreenContent(adError: com.google.android.gms.ads.AdError) {
-                        mInterstitialAd = null
-                        loadInterstitial(activity)
-                        onDismiss()
-                    }
-                }
-                ad.show(activity)
+            if (ad != null && ad.isReady) {
+                currentInterstitialDismissCallback = onDismiss
+                ad.show()
             } else {
-                // Preload again in case offline or failed
+                Log.d("AdManager", "InMobi Interstitial not ready, reloading and skipping banner")
                 loadInterstitial(activity)
                 onDismiss()
             }
@@ -1114,26 +1177,33 @@ fun android.content.Context.findActivity(): android.app.Activity? {
 
 @Composable
 fun AdmobBanner(modifier: Modifier = Modifier) {
-    androidx.compose.ui.viewinterop.AndroidView<android.view.View>(
-        modifier = modifier.fillMaxWidth(),
-        factory = { context ->
-            val adView = AdView(context).apply {
-                adUnitId = AdManager.BANNER_ID
-                setAdSize(AdSize.BANNER)
-                adListener = object : com.google.android.gms.ads.AdListener() {
-                    override fun onAdLoaded() {
-                        Log.d("AdmobBanner", "Banner loaded successfully")
-                    }
-                    override fun onAdFailedToLoad(loadAdError: LoadAdError) {
-                        Log.e("AdmobBanner", "Banner failed to load: ${loadAdError.message}")
-                    }
-                }
-            }
-            adView.loadAd(AdRequest.Builder().build())
-            adView
-        },
-        update = { }
-    )
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(55.dp)
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .background(Color(0xFF141221), RoundedCornerShape(10.dp))
+            .border(1.dp, Color(0xFF00FF87).copy(alpha = 0.2f), RoundedCornerShape(10.dp)),
+        contentAlignment = Alignment.Center
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = "SPONSOR SECURE ⚔️",
+                color = Color(0xFF00FF87),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.ExtraBold,
+                letterSpacing = 1.sp
+            )
+            Text(
+                text = "Supporting Titan Arena Matches",
+                color = Color(0xFFBDC2E8),
+                fontSize = 10.sp
+            )
+        }
+    }
 }
 
 // --- COMPOSE CORE SCREEN ROUTER ---
