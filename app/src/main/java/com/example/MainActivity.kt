@@ -750,7 +750,7 @@ class MainActivity : ComponentActivity() {
 
 // --- GOOGLE ADMOB AD MANAGER ---
 object AdManager {
-    var BANNER_ID = "ca-app-pub-3940256099942544/6300978111"
+    var BANNER_ID = ""
     var INTERSTITIAL_ID = "ca-app-pub-7097873827850974/5832117032"
     var REWARDED_ID = "ca-app-pub-7097873827850974/6117004753"
 
