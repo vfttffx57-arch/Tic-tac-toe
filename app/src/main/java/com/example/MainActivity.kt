@@ -46,13 +46,13 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.*
 import com.example.ui.theme.MyApplicationTheme
-import com.google.android.gms.ads.*
-import com.google.android.gms.ads.interstitial.InterstitialAd
-import com.google.android.gms.ads.interstitial.InterstitialAdLoadCallback
-import com.google.android.gms.ads.rewarded.RewardedAd
-import com.google.android.gms.ads.rewarded.RewardedAdLoadCallback
-import com.google.android.gms.ads.appopen.AppOpenAd
-import com.google.android.gms.ads.appopen.AppOpenAd.AppOpenAdLoadCallback
+import com.unity3d.ads.IUnityAdsInitializationListener
+import com.unity3d.ads.IUnityAdsLoadListener
+import com.unity3d.ads.IUnityAdsShowListener
+import com.unity3d.ads.UnityAds
+import com.unity3d.services.banners.BannerView
+import com.unity3d.services.banners.BannerErrorInfo
+import com.unity3d.services.banners.UnityBannerSize
 import android.util.Log
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
@@ -815,168 +815,110 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// --- ADMOB AD MANAGER AND UI COMPONENT ---
+// --- UNITY ADS AD MANAGER AND UI COMPONENT ---
 
 object AdManager {
-    var appOpenAd: AppOpenAd? = null
-    var interstitialAd: InterstitialAd? = null
-    var rewardedAd: RewardedAd? = null
-    var isAppOpenLoading = false
+    // Standard Unity Ads Android Test Game ID is "1485903"
+    var GAME_ID = "1485903"
+    var INTERSTITIAL_ID = "Interstitial_Android"
+    var REWARDED_ID = "Rewarded_Android"
+    var BANNER_ID = "Banner_Android"
+
+    var isInitialized = false
     var isInterstitialLoading = false
     var isRewardedLoading = false
 
-    // User's authentic AdMob ad unit ID codes
-    const val APP_OPEN_ID = "ca-app-pub-7097873827850974/5640545344"
-    const val INTERSTITIAL_ID = "ca-app-pub-7097873827850974/5832117032"
-    const val REWARDED_ID = "ca-app-pub-7097873827850974/1892872020"
-    const val BANNER_ID = "ca-app-pub-7097873827850974/1899090978"
-
-    // Official Google AdMob Test Unit IDs
-    const val TEST_APP_OPEN_ID = "ca-app-pub-3940256099942544/9257395921"
-    const val TEST_INTERSTITIAL_ID = "ca-app-pub-3940256099942544/1033173712"
-    const val TEST_REWARDED_ID = "ca-app-pub-3940256099942544/5224354917"
-    const val TEST_BANNER_ID = "ca-app-pub-3940256099942544/6300978111"
+    private val loadedPlacements = java.util.Collections.synchronizedSet(HashSet<String>())
 
     fun init(context: android.content.Context) {
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-        MobileAds.initialize(context) { initializationStatus ->
-            mainHandler.post {
-                Log.d("AdManager", "MobileAds fully initialized! Status: ${initializationStatus.adapterStatusMap}")
-                loadAppOpen(context)
-                loadInterstitial(context)
-                loadRewarded(context)
+        Log.d("AdManager", "Initializing Unity Ads with Game ID: $GAME_ID (Test Mode: true)")
+        
+        UnityAds.initialize(context, GAME_ID, true, object : IUnityAdsInitializationListener {
+            override fun onInitializationComplete() {
+                mainHandler.post {
+                    Log.d("AdManager", "Unity Ads Initialization Complete!")
+                    isInitialized = true
+                    loadInterstitial(context)
+                    loadRewarded(context)
+                }
             }
-        }
+
+            override fun onInitializationFailed(error: UnityAds.UnityAdsInitializationError, message: String) {
+                mainHandler.post {
+                    Log.e("AdManager", "Unity Ads Initialization Failed: [$error] $message")
+                    isInitialized = false
+                }
+            }
+        })
     }
 
     fun loadAppOpen(context: android.content.Context, useFallback: Boolean = false) {
-        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-        mainHandler.post {
-            val adUnit = if (useFallback) TEST_APP_OPEN_ID else APP_OPEN_ID
-            if (appOpenAd != null || isAppOpenLoading) return@post
-            isAppOpenLoading = true
-            Log.d("AdManager", "Attempting to load App Open Ad (Unit ID: $adUnit)")
-            val adRequest = AdRequest.Builder().build()
-            AppOpenAd.load(
-                context,
-                adUnit,
-                adRequest,
-                object : AppOpenAdLoadCallback() {
-                    override fun onAdLoaded(ad: AppOpenAd) {
-                        mainHandler.post {
-                            appOpenAd = ad
-                            isAppOpenLoading = false
-                            Log.d("AdManager", "App Open Ad loaded successfully (Unit ID: $adUnit)")
-                        }
-                    }
-
-                    override fun onAdFailedToLoad(error: LoadAdError) {
-                        mainHandler.post {
-                            appOpenAd = null
-                            isAppOpenLoading = false
-                            Log.e("AdManager", "App Open Ad failed to load (Unit ID: $adUnit). Error: ${error.message} (Code: ${error.code})")
-                            if (!useFallback) {
-                                Log.w("AdManager", "Retrying App Open Ad with official Google Test ID...")
-                                loadAppOpen(context, useFallback = true)
-                            }
-                        }
-                    }
-                }
-            )
-        }
+        // App open ads are not supported natively in Unity Ads
     }
 
     fun showAppOpen(activity: android.app.Activity, onDismiss: () -> Unit) {
-        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-        mainHandler.post {
-            val ad = appOpenAd
-            if (ad != null) {
-                ad.fullScreenContentCallback = object : FullScreenContentCallback() {
-                    override fun onAdDismissedFullScreenContent() {
-                        mainHandler.post {
-                            appOpenAd = null
-                            loadAppOpen(activity)
-                            onDismiss()
-                        }
-                    }
-
-                    override fun onAdFailedToShowFullScreenContent(error: AdError) {
-                        mainHandler.post {
-                            appOpenAd = null
-                            loadAppOpen(activity)
-                            onDismiss()
-                        }
-                    }
-                }
-                ad.show(activity)
-            } else {
-                loadAppOpen(activity)
-                onDismiss()
-            }
-        }
+        onDismiss()
     }
 
     fun loadInterstitial(context: android.content.Context, useFallback: Boolean = false) {
-        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-        mainHandler.post {
-            val adUnit = if (useFallback) TEST_INTERSTITIAL_ID else INTERSTITIAL_ID
-            if (interstitialAd != null || isInterstitialLoading) return@post
-            isInterstitialLoading = true
-            Log.d("AdManager", "Attempting to load Interstitial Ad (Unit ID: $adUnit)")
-            val adRequest = AdRequest.Builder().build()
-            InterstitialAd.load(
-                context,
-                adUnit,
-                adRequest,
-                object : InterstitialAdLoadCallback() {
-                    override fun onAdLoaded(ad: InterstitialAd) {
-                        mainHandler.post {
-                            interstitialAd = ad
-                            isInterstitialLoading = false
-                            Log.d("AdManager", "Interstitial Ad loaded successfully (Unit ID: $adUnit)")
-                        }
-                    }
-
-                    override fun onAdFailedToLoad(error: LoadAdError) {
-                        mainHandler.post {
-                            interstitialAd = null
-                            isInterstitialLoading = false
-                            Log.e("AdManager", "Interstitial Ad failed to load (Unit ID: $adUnit). Error: ${error.message} (Code: ${error.code})")
-                            if (!useFallback) {
-                                Log.w("AdManager", "Retrying Interstitial Ad with official Google Test ID...")
-                                loadInterstitial(context, useFallback = true)
-                            }
-                        }
-                    }
+        if (isInterstitialLoading) return
+        isInterstitialLoading = true
+        Log.d("AdManager", "Loading Unity Interstitial Ad: $INTERSTITIAL_ID")
+        
+        UnityAds.load(INTERSTITIAL_ID, object : IUnityAdsLoadListener {
+            override fun onUnityAdsAdLoaded(placementId: String) {
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    Log.d("AdManager", "Unity Interstitial Ad Loaded: $placementId")
+                    loadedPlacements.add(placementId)
+                    isInterstitialLoading = false
                 }
-            )
-        }
+            }
+
+            override fun onUnityAdsFailedToLoad(placementId: String, error: UnityAds.UnityAdsLoadError, message: String) {
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    Log.e("AdManager", "Unity Interstitial Ad Failed to Load: $placementId, [$error] $message")
+                    loadedPlacements.remove(placementId)
+                    isInterstitialLoading = false
+                }
+            }
+        })
     }
 
     fun showInterstitial(activity: android.app.Activity, onDismiss: () -> Unit) {
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
         mainHandler.post {
-            val ad = interstitialAd
-            if (ad != null) {
-                ad.fullScreenContentCallback = object : FullScreenContentCallback() {
-                    override fun onAdDismissedFullScreenContent() {
+            if (loadedPlacements.contains(INTERSTITIAL_ID)) {
+                Log.d("AdManager", "Showing Unity Interstitial Ad: $INTERSTITIAL_ID")
+                UnityAds.show(activity, INTERSTITIAL_ID, object : IUnityAdsShowListener {
+                    override fun onUnityAdsShowFailure(placementId: String, error: UnityAds.UnityAdsShowError, message: String) {
                         mainHandler.post {
-                            interstitialAd = null
+                            Log.e("AdManager", "Unity Interstitial Show Failed: $placementId, [$error] $message")
+                            loadedPlacements.remove(placementId)
                             loadInterstitial(activity)
                             onDismiss()
                         }
                     }
 
-                    override fun onAdFailedToShowFullScreenContent(error: AdError) {
+                    override fun onUnityAdsShowStart(placementId: String) {
+                        Log.d("AdManager", "Unity Interstitial Show Started: $placementId")
+                    }
+
+                    override fun onUnityAdsShowClick(placementId: String) {
+                        Log.d("AdManager", "Unity Interstitial Clicked: $placementId")
+                    }
+
+                    override fun onUnityAdsShowComplete(placementId: String, state: UnityAds.UnityAdsShowCompletionState) {
                         mainHandler.post {
-                            interstitialAd = null
+                            Log.d("AdManager", "Unity Interstitial Show Completed: $placementId, State: $state")
+                            loadedPlacements.remove(placementId)
                             loadInterstitial(activity)
                             onDismiss()
                         }
                     }
-                }
-                ad.show(activity)
+                })
             } else {
+                Log.w("AdManager", "Unity Interstitial Ad not loaded yet. Loading and completing bypass.")
                 loadInterstitial(activity)
                 onDismiss()
             }
@@ -984,73 +926,69 @@ object AdManager {
     }
 
     fun loadRewarded(context: android.content.Context, useFallback: Boolean = false) {
-        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-        mainHandler.post {
-            val adUnit = if (useFallback) TEST_REWARDED_ID else REWARDED_ID
-            if (rewardedAd != null || isRewardedLoading) return@post
-            isRewardedLoading = true
-            Log.d("AdManager", "Attempting to load Rewarded Ad (Unit ID: $adUnit)")
-            val adRequest = AdRequest.Builder().build()
-            RewardedAd.load(
-                context,
-                adUnit,
-                adRequest,
-                object : RewardedAdLoadCallback() {
-                    override fun onAdLoaded(ad: RewardedAd) {
-                        mainHandler.post {
-                            rewardedAd = ad
-                            isRewardedLoading = false
-                            Log.d("AdManager", "Rewarded Ad loaded successfully (Unit ID: $adUnit)")
-                        }
-                    }
-
-                    override fun onAdFailedToLoad(error: LoadAdError) {
-                        mainHandler.post {
-                            rewardedAd = null
-                            isRewardedLoading = false
-                            Log.e("AdManager", "Rewarded Ad failed to load (Unit ID: $adUnit). Error: ${error.message} (Code: ${error.code})")
-                            if (!useFallback) {
-                                Log.w("AdManager", "Retrying Rewarded Ad with official Google Test ID...")
-                                loadRewarded(context, useFallback = true)
-                            }
-                        }
-                    }
+        if (isRewardedLoading) return
+        isRewardedLoading = true
+        Log.d("AdManager", "Loading Unity Rewarded Ad: $REWARDED_ID")
+        
+        UnityAds.load(REWARDED_ID, object : IUnityAdsLoadListener {
+            override fun onUnityAdsAdLoaded(placementId: String) {
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    Log.d("AdManager", "Unity Rewarded Ad Loaded: $placementId")
+                    loadedPlacements.add(placementId)
+                    isRewardedLoading = false
                 }
-            )
-        }
+            }
+
+            override fun onUnityAdsFailedToLoad(placementId: String, error: UnityAds.UnityAdsLoadError, message: String) {
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    Log.e("AdManager", "Unity Rewarded Ad Failed to Load: $placementId, [$error] $message")
+                    loadedPlacements.remove(placementId)
+                    isRewardedLoading = false
+                }
+            }
+        })
     }
 
     fun showRewarded(activity: android.app.Activity, onRewardEarned: (Int) -> Unit, onDismiss: () -> Unit) {
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
         mainHandler.post {
-            val ad = rewardedAd
-            if (ad != null) {
-                ad.fullScreenContentCallback = object : FullScreenContentCallback() {
-                    override fun onAdDismissedFullScreenContent() {
+            if (loadedPlacements.contains(REWARDED_ID)) {
+                Log.d("AdManager", "Showing Unity Rewarded Ad: $REWARDED_ID")
+                UnityAds.show(activity, REWARDED_ID, object : IUnityAdsShowListener {
+                    override fun onUnityAdsShowFailure(placementId: String, error: UnityAds.UnityAdsShowError, message: String) {
                         mainHandler.post {
-                            rewardedAd = null
-                            loadRewarded(activity)
-                            onDismiss()
-                        }
-                    }
-
-                    override fun onAdFailedToShowFullScreenContent(error: AdError) {
-                        mainHandler.post {
-                            Log.e("AdManager", "Failed to show Rewarded Ad: ${error.message}")
-                            rewardedAd = null
+                            Log.e("AdManager", "Unity Rewarded Show Failed: $placementId, [$error] $message")
+                            loadedPlacements.remove(placementId)
                             loadRewarded(activity)
                             onRewardEarned(1)
                             onDismiss()
                         }
                     }
-                }
-                ad.show(activity) { rewardItem ->
-                    mainHandler.post {
-                        onRewardEarned(rewardItem.amount)
+
+                    override fun onUnityAdsShowStart(placementId: String) {
+                        Log.d("AdManager", "Unity Rewarded Show Started: $placementId")
                     }
-                }
+
+                    override fun onUnityAdsShowClick(placementId: String) {
+                        Log.d("AdManager", "Unity Rewarded Clicked: $placementId")
+                    }
+
+                    override fun onUnityAdsShowComplete(placementId: String, state: UnityAds.UnityAdsShowCompletionState) {
+                        mainHandler.post {
+                            Log.d("AdManager", "Unity Rewarded Completed: $placementId, State: $state")
+                            loadedPlacements.remove(placementId)
+                            loadRewarded(activity)
+                            if (state == UnityAds.UnityAdsShowCompletionState.COMPLETED) {
+                                onRewardEarned(1)
+                            } else {
+                                onRewardEarned(1)
+                            }
+                            onDismiss()
+                        }
+                    }
+                })
             } else {
-                Log.w("AdManager", "Rewarded Ad not loaded yet. Attempting to reload and falling back to auto-reward.")
+                Log.w("AdManager", "Unity Rewarded Ad not loaded yet. Redeeming fallback reward.")
                 loadRewarded(activity)
                 activity.runOnUiThread {
                     android.widget.Toast.makeText(activity, "Sponsor Ad Demo Mode (Proceeding to Game)", android.widget.Toast.LENGTH_SHORT).show()
@@ -1076,28 +1014,45 @@ fun AdmobBanner(modifier: Modifier = Modifier) {
     var currentBannerId by remember { mutableStateOf(AdManager.BANNER_ID) }
 
     androidx.compose.runtime.key(currentBannerId) {
-        androidx.compose.ui.viewinterop.AndroidView(
+        androidx.compose.ui.viewinterop.AndroidView<android.view.View>(
             modifier = modifier.fillMaxWidth(),
             factory = { context ->
-                AdView(context).apply {
-                    setAdSize(AdSize.BANNER)
-                    adUnitId = currentBannerId
-                    adListener = object : AdListener() {
-                        override fun onAdFailedToLoad(error: LoadAdError) {
-                            Log.e("AdmobBanner", "Primary banner failed to load (${currentBannerId}): ${error.message}")
-                            if (currentBannerId == AdManager.BANNER_ID) {
-                                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                                    Log.w("AdmobBanner", "Switching to Test Banner fallback...")
-                                    currentBannerId = AdManager.TEST_BANNER_ID
-                                }
-                            }
+                val activity = context.findActivity()
+                if (activity != null) {
+                    val banner = BannerView(
+                        activity,
+                        currentBannerId,
+                        UnityBannerSize(320, 50)
+                    )
+                    banner.listener = object : BannerView.IListener {
+                        override fun onBannerLoaded(bannerView: BannerView?) {
+                            Log.d("UnityBanner", "Banner loaded successfully: $currentBannerId")
+                        }
+
+                        override fun onBannerClick(bannerView: BannerView?) {
+                            Log.d("UnityBanner", "Banner clicked")
+                        }
+
+                        override fun onBannerFailedToLoad(bannerView: BannerView?, errorInfo: BannerErrorInfo?) {
+                            Log.e("UnityBanner", "Banner failed to load: ${errorInfo?.errorMessage}")
+                        }
+
+                        override fun onBannerLeftApplication(bannerView: BannerView?) {
+                            Log.d("UnityBanner", "Banner left application")
+                        }
+
+                        override fun onBannerShown(bannerView: BannerView?) {
+                            Log.d("UnityBanner", "Banner shown")
                         }
                     }
-                    loadAd(AdRequest.Builder().build())
+                    banner.load()
+                    banner as android.view.View
+                } else {
+                    android.view.View(context)
                 }
             },
             update = {
-                // Key-based recreation handles ad unit id updates safely without IllegalStateException
+                // Key-based recreation handles updates
             }
         )
     }
