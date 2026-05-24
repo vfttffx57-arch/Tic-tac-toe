@@ -1,6 +1,10 @@
 package com.example
 
+import android.content.Context
+import android.content.SharedPreferences
 import android.os.Bundle
+import android.util.Log
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -9,13 +13,10 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -36,6 +37,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -57,48 +59,32 @@ import com.google.android.gms.ads.rewarded.RewardedAd
 import com.google.android.gms.ads.rewarded.RewardedAdLoadCallback
 import com.google.android.gms.ads.OnUserEarnedRewardListener
 import com.google.android.gms.ads.FullScreenContentCallback
-import android.util.Log
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
 
-// --- DATA STRUCTURES & OPPONENT SELECTION ---
-
+// --- SCREEN STATES ---
 enum class ScreenState {
-    ONBOARDING,
+    ONBOARDING, // Acts as Login / Sing up
     HOME,
+    REDEEM,
+    ADMIN,
     MATCHMAKING,
     MATCH_FOUND,
     GAMEPLAY,
     GAMEOVER
 }
 
-enum class PersonalityType {
-    FRIENDLY,    // Emotes, polite, praises, sweet excuses
-    CASUAL,      // "oof", "lol", chill gaming phrases, easygoing
-    COMPETITIVE, // Throws excuses like "lag", "latency", competitive banter
-    SNEAKY_TYPO  // Types with funny typos, blames fat fingers
-}
-
+// --- OPPONENTS POOL ---
 data class OpponentProfile(
     val name: String,
     val avatarEmoji: String,
     val rankTitle: String,
     val winRate: String,
-    val rankPoints: Int,
-    val personality: PersonalityType,
     val avatarBg: Brush,
     val tagline: String
-)
-
-data class ChatMessage(
-    val id: Long = System.nanoTime(),
-    val sender: String,
-    val text: String,
-    val isPlayer: Boolean,
-    val timestamp: Long = System.currentTimeMillis()
 )
 
 val OPPONENTS_POOL = listOf(
@@ -107,8 +93,6 @@ val OPPONENTS_POOL = listOf(
         avatarEmoji = "💫",
         rankTitle = "Gold III",
         winRate = "51%",
-        rankPoints = 1120,
-        personality = PersonalityType.FRIENDLY,
         avatarBg = Brush.linearGradient(listOf(Color(0xFF8E2DE2), Color(0xFF4A00E0))),
         tagline = "Let's make this a beautiful game! 🌸"
     ),
@@ -117,8 +101,6 @@ val OPPONENTS_POOL = listOf(
         avatarEmoji = "👾",
         rankTitle = "Gold I",
         winRate = "54%",
-        rankPoints = 1380,
-        personality = PersonalityType.CASUAL,
         avatarBg = Brush.linearGradient(listOf(Color(0xFF00FF87), Color(0xFF60EFFF))),
         tagline = "Down for a chill session. No tryhards! 🥤"
     ),
@@ -127,8 +109,6 @@ val OPPONENTS_POOL = listOf(
         avatarEmoji = "⚡",
         rankTitle = "Gold IV",
         winRate = "49%",
-        rankPoints = 1250,
-        personality = PersonalityType.COMPETITIVE,
         avatarBg = Brush.linearGradient(listOf(Color(0xFFFF416C), Color(0xFFFF4B2B))),
         tagline = "Road to Platinum! Don't lag please. 😤"
     ),
@@ -137,8 +117,6 @@ val OPPONENTS_POOL = listOf(
         avatarEmoji = "🍕",
         rankTitle = "Silver II",
         winRate = "46%",
-        rankPoints = 1040,
-        personality = PersonalityType.SNEAKY_TYPO,
         avatarBg = Brush.linearGradient(listOf(Color(0xFFF12711), Color(0xFFF5AF19))),
         tagline = "typing from phone while eating pizza sry"
     ),
@@ -147,39 +125,53 @@ val OPPONENTS_POOL = listOf(
         avatarEmoji = "🎋",
         rankTitle = "Gold II",
         winRate = "50%",
-        rankPoints = 1430,
-        personality = PersonalityType.FRIENDLY,
         avatarBg = Brush.linearGradient(listOf(Color(0xFF11998e), Color(0xFF38ef7d))),
-        tagline = "Calm breaths, perfect placements. 🌸"
-    ),
-    OpponentProfile(
-        name = "RogueGamer_💀",
-        avatarEmoji = "🎯",
-        rankTitle = "Platinum V",
-        winRate = "57%",
-        rankPoints = 1620,
-        personality = PersonalityType.COMPETITIVE,
-        avatarBg = Brush.linearGradient(listOf(Color(0xFF1F1C2C), Color(0xFF928DAB))),
-        tagline = "Rank matches only. Win streaks on lock."
+        tagline = "Focus like a mountain, flow like water. 🧘"
     )
 )
 
-// --- VIEWMODEL ---
+// Opponent name obfuscation utility: E.g., "LunaStar_✨" -> "🤖 Lu***ar_✨"
+fun maskOpponentName(name: String): String {
+    val prefix = "🤖 "
+    val suffix = if (name.endsWith("✨") || name.endsWith("🎮") || name.endsWith("🍿") || name.endsWith("🐼")) {
+        "_" + name.takeLast(1)
+    } else ""
+    
+    val cleanName = name.replace("🤖 ", "").replace("✨", "").replace("🎮", "").replace("🍿", "").replace("🐼", "").trim()
+    if (cleanName.length <= 4) {
+         return prefix + cleanName.take(1) + "***" + cleanName.takeLast(1) + suffix
+    }
+    return prefix + cleanName.take(2) + "***" + cleanName.takeLast(2) + suffix
+}
 
-class TicTacToeViewModel(private val repository: GameRepository) : ViewModel() {
+// --- VIEW MODEL ---
+class TicTacToeViewModel : ViewModel() {
 
-    // Profile & Stats from Database
-    val playerProfile: StateFlow<PlayerProfile?> = repository.playerProfile
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+    // Auth Session Info
+    private val _userEmail = MutableStateFlow<String?>(null)
+    val userEmail: StateFlow<String?> = _userEmail.asStateFlow()
 
-    val matchHistory: StateFlow<List<MatchRecord>> = repository.matchHistory
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    private val _userUid = MutableStateFlow<String?>(null)
+    val userUid: StateFlow<String?> = _userUid.asStateFlow()
 
-    // UI Screen States
+    private val _userPoints = MutableStateFlow(0)
+    val userPoints: StateFlow<Int> = _userPoints.asStateFlow()
+
+    private val _redeemHistory = MutableStateFlow<List<RedeemRequest>>(emptyList())
+    val redeemHistory: StateFlow<List<RedeemRequest>> = _redeemHistory.asStateFlow()
+
+    // Screen State
     private val _currentScreen = MutableStateFlow(ScreenState.ONBOARDING)
     val currentScreen: StateFlow<ScreenState> = _currentScreen.asStateFlow()
 
-    // Matchmaking variables
+    // Loading & Error logs
+    private val _isLoginLoading = MutableStateFlow(false)
+    val isLoginLoading: StateFlow<Boolean> = _isLoginLoading.asStateFlow()
+
+    private val _authError = MutableStateFlow<String?>(null)
+    val authError: StateFlow<String?> = _authError.asStateFlow()
+
+    // Matchmaking Variables
     private val _matchmakingTimeSec = MutableStateFlow(0)
     val matchmakingTimeSec: StateFlow<Int> = _matchmakingTimeSec.asStateFlow()
 
@@ -202,104 +194,215 @@ class TicTacToeViewModel(private val repository: GameRepository) : ViewModel() {
     private val _turnTimer = MutableStateFlow(15)
     val turnTimer: StateFlow<Int> = _turnTimer.asStateFlow()
 
-    private val _chatMessages = MutableStateFlow<List<ChatMessage>>(emptyList())
-    val chatMessages: StateFlow<List<ChatMessage>> = _chatMessages.asStateFlow()
-
-    private val _isPingSimulating = MutableStateFlow(false)
-    val isPingSimulating: StateFlow<Boolean> = _isPingSimulating.asStateFlow()
-
-    private val _pingMs = MutableStateFlow(24)
+    private val _pingMs = MutableStateFlow(32)
     val pingMs: StateFlow<Int> = _pingMs.asStateFlow()
 
     private var timerJob: kotlinx.coroutines.Job? = null
-    private var isRematching = false
+
+    // Admin Variables
+    private val _allRedeemRequests = MutableStateFlow<List<RedeemRequest>>(emptyList())
+    val allRedeemRequests: StateFlow<List<RedeemRequest>> = _allRedeemRequests.asStateFlow()
+
+    private val _allMatchHistory = MutableStateFlow<List<MatchRecordFirebase>>(emptyList())
+    val allMatchHistory: StateFlow<List<MatchRecordFirebase>> = _allMatchHistory.asStateFlow()
+
+    private val _isAdminLoading = MutableStateFlow(false)
+    val isAdminLoading: StateFlow<Boolean> = _isAdminLoading.asStateFlow()
+
+    fun setScreen(state: ScreenState) {
+        _currentScreen.value = state
+    }
 
     init {
-        // Automatically move to HOME if nickname exists
-        viewModelScope.launch {
-            playerProfile.collect { profile ->
-                if (profile != null && _currentScreen.value == ScreenState.ONBOARDING) {
-                    _currentScreen.value = ScreenState.HOME
-                }
-            }
-        }
-
-        // Keep ping jumping naturally for realism
+        // Ping simulations
         viewModelScope.launch {
             while (true) {
-                delay(1200)
-                _pingMs.value = (22..68).random()
+                delay(1500)
+                _pingMs.value = (24..62).random()
             }
         }
     }
 
-    fun submitNickname(name: String) {
-        viewModelScope.launch {
-            val newProfile = PlayerProfile(
-                username = if (name.trim().isEmpty()) "Player_${(1000..9999).random()}" else name.trim(),
-                rankPoints = 1200, // Starts mid Gold
-                wins = 0,
-                losses = 0,
-                draws = 0,
-                walletBalance = 10.00 // Default initial wallet balance in Rupees
-            )
-            repository.saveProfile(newProfile)
+    // Attempt auto login from SharedPreferences credentials
+    fun checkAutoLogin(context: Context) {
+        val sp = context.getSharedPreferences("user_session", Context.MODE_PRIVATE)
+        val savedUid = sp.getString("uid", null)
+        val savedEmail = sp.getString("email", null)
+
+        if (savedUid != null && savedEmail != null) {
+            _userUid.value = savedUid
+            _userEmail.value = savedEmail
             _currentScreen.value = ScreenState.HOME
+            refreshUserProfile()
+            loadRedeemHistory()
+            if (savedEmail == "vfttffx57@gmail.com") {
+                loadAdminData()
+            }
         }
     }
 
-    fun checkAndStartMatch(activity: android.app.Activity, onSuccess: () -> Unit, onFail: (String) -> Unit) {
-        val currentProfile = playerProfile.value
-        if (currentProfile == null) {
-            onFail("Profile not found")
+    fun login(email: String, password: String, context: Context) {
+        if (email.isEmpty() || password.isEmpty()) {
+            _authError.value = "Email and password cannot be empty."
             return
         }
-        if (currentProfile.walletBalance < 0.10) {
-            onFail("INSUFFICIENT_FUNDS")
-            return
-        }
+        viewModelScope.launch {
+            _isLoginLoading.value = true
+            _authError.value = null
+            val result = FirebaseService.signIn(email, password)
+            if (result.success && result.uid != null && result.email != null) {
+                _userUid.value = result.uid
+                _userEmail.value = result.email
+                
+                // Save session persistence
+                val sp = context.getSharedPreferences("user_session", Context.MODE_PRIVATE)
+                sp.edit().putString("uid", result.uid).putString("email", result.email).apply()
 
-        var earnedReward = false
-        // Play requires watching a rewarded ad AND paying 0.10 rupees entry fee
+                // Load Firestore profile
+                val profile = FirebaseService.getUserProfile(result.uid)
+                if (profile != null) {
+                    _userPoints.value = profile.points
+                } else {
+                    // Initialize first if profile failed to fetch
+                    FirebaseService.saveUserProfile(result.uid, result.email, 500)
+                    _userPoints.value = 500
+                }
+
+                _currentScreen.value = ScreenState.HOME
+                loadRedeemHistory()
+                if (result.email == "vfttffx57@gmail.com") {
+                    loadAdminData()
+                }
+            } else {
+                _authError.value = result.errorMessage ?: "Authentication failed."
+            }
+            _isLoginLoading.value = false
+        }
+    }
+
+    fun signUp(email: String, password: String, context: Context) {
+        if (email.isEmpty() || password.isEmpty()) {
+            _authError.value = "Email and password cannot be empty."
+            return
+        }
+        if (password.length < 6) {
+            _authError.value = "Password must be at least 6 characters."
+            return
+        }
+        viewModelScope.launch {
+            _isLoginLoading.value = true
+            _authError.value = null
+            val result = FirebaseService.signUp(email, password)
+            if (result.success && result.uid != null && result.email != null) {
+                _userUid.value = result.uid
+                _userEmail.value = result.email
+                
+                // Save session persistence
+                val sp = context.getSharedPreferences("user_session", Context.MODE_PRIVATE)
+                sp.edit().putString("uid", result.uid).putString("email", result.email).apply()
+
+                // Register 500 Points default welcome balance in Cloud Database
+                val saveOk = FirebaseService.saveUserProfile(result.uid, result.email, 500)
+                _userPoints.value = 500
+
+                _currentScreen.value = ScreenState.HOME
+                loadRedeemHistory()
+            } else {
+                _authError.value = result.errorMessage ?: "Signup failed. Try different credentials."
+            }
+            _isLoginLoading.value = false
+        }
+    }
+
+    fun logout(context: Context) {
+        val sp = context.getSharedPreferences("user_session", Context.MODE_PRIVATE)
+        sp.edit().clear().apply()
+        _userUid.value = null
+        _userEmail.value = null
+        _userPoints.value = 0
+        _redeemHistory.value = emptyList()
+        _currentScreen.value = ScreenState.ONBOARDING
+    }
+
+    fun refreshUserProfile() {
+        val uid = _userUid.value ?: return
+        viewModelScope.launch {
+            val profile = FirebaseService.getUserProfile(uid)
+            if (profile != null) {
+                _userPoints.value = profile.points
+            }
+        }
+    }
+
+    fun loadRedeemHistory() {
+        val uid = _userUid.value ?: return
+        viewModelScope.launch {
+            val list = FirebaseService.getRedeemRequests(uid)
+            _redeemHistory.value = list
+        }
+    }
+
+    fun watchRewardedAdForPoints(activity: android.app.Activity) {
+        val uid = _userUid.value ?: return
+        val email = _userEmail.value ?: return
+        
+        _isLoginLoading.value = true
         AdManager.showRewarded(
             activity = activity,
             onRewardEarned = { amount ->
-                earnedReward = true
                 viewModelScope.launch {
-                    val nextProfile = currentProfile.copy(
-                        walletBalance = (currentProfile.walletBalance - 0.10).coerceAtLeast(0.0)
-                    )
-                    repository.saveProfile(nextProfile)
-                    onSuccess()
+                    val newBalance = _userPoints.value + 150
+                    FirebaseService.saveUserProfile(uid, email, newBalance)
+                    _userPoints.value = newBalance
+                    Toast.makeText(activity, "Successfully earned +150 Points!", Toast.LENGTH_SHORT).show()
                 }
             },
             onDismiss = {
-                if (!earnedReward) {
-                    onFail("AD_CLOSED")
-                }
+                _isLoginLoading.value = false
+                refreshUserProfile()
             }
         )
     }
 
-    fun watchRewardedAdForTopUp(activity: android.app.Activity, onSuccess: () -> Unit, onFailure: () -> Unit) {
-        var earnedReward = false
+    fun claimRedeemRequest(context: Context) {
+        val uid = _userUid.value ?: return
+        val email = _userEmail.value ?: return
+        val current = _userPoints.value
+
+        if (current < 1000) {
+            Toast.makeText(context, "Insufficient Points. Need at least 1000 Points to claim code.", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        viewModelScope.launch {
+            val netPoints = current - 1000
+            val savedOk = FirebaseService.saveUserProfile(uid, email, netPoints)
+            if (savedOk) {
+                _userPoints.value = netPoints
+                val submitted = FirebaseService.submitRedeemRequest(uid, email, 1000)
+                if (submitted) {
+                    Toast.makeText(context, "Successfully Claimed ₹10 Play Store Card! Pending Admin confirmation.", Toast.LENGTH_LONG).show()
+                    loadRedeemHistory()
+                } else {
+                    Toast.makeText(context, "Request logged, network connection synced.", Toast.LENGTH_SHORT).show()
+                }
+            } else {
+                Toast.makeText(context, "Cloud sync pending. Try again later.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    // --- GAME QUEUE & MATCH PLAY FLOW ---
+    fun startPlayMatchFlow(activity: android.app.Activity) {
+        // Show Google Play Rewarded Ad before joining Match Queue!
         AdManager.showRewarded(
             activity = activity,
-            onRewardEarned = { amount ->
-                earnedReward = true
-                viewModelScope.launch {
-                    val currentProfile = playerProfile.value ?: return@launch
-                    val updatedProfile = currentProfile.copy(
-                        walletBalance = currentProfile.walletBalance + 0.50
-                    )
-                    repository.saveProfile(updatedProfile)
-                    onSuccess()
-                }
+            onRewardEarned = {
+                // Earned reward
             },
             onDismiss = {
-                if (!earnedReward) {
-                    onFailure()
-                }
+                // Instantly queues user into matchmaking
+                startMatchmaking()
             }
         )
     }
@@ -312,10 +415,10 @@ class TicTacToeViewModel(private val repository: GameRepository) : ViewModel() {
                 delay(1000)
                 _matchmakingTimeSec.value = i
             }
-            // Pick a random opponent from the list
+            // Pick a random styled AI opponent
             _opponent.value = OPPONENTS_POOL.random()
             _currentScreen.value = ScreenState.MATCH_FOUND
-            delay(2800) // Versus match cards display
+            delay(2800) // Beautiful versus card animation pause
             setupNewGame()
         }
     }
@@ -323,18 +426,11 @@ class TicTacToeViewModel(private val repository: GameRepository) : ViewModel() {
     private fun setupNewGame() {
         _board.value = List(9) { "" }
         _winner.value = null
-        _chatMessages.value = emptyList()
         _currentScreen.value = ScreenState.GAMEPLAY
 
-        // Randomly select who starts
+        // Decides who starts match (50/50 Chance)
         val playerStarts = (0..1).random() == 1
         _isPlayerTurn.value = playerStarts
-
-        // Set up first opponent text
-        viewModelScope.launch {
-            delay(1000)
-            sendOpponentInitialChat()
-        }
 
         startTurnTimer()
 
@@ -352,9 +448,8 @@ class TicTacToeViewModel(private val repository: GameRepository) : ViewModel() {
                 if (_turnTimer.value > 0) {
                     _turnTimer.value -= 1
                 } else {
-                    // Force natural auto-move or passive stall if they run out of time
+                    // Turn times out -> Auto plays random move for active side
                     if (_isPlayerTurn.value) {
-                        // Play random cell for player if AFK timer strikes
                         val available = _board.value.indices.filter { _board.value[it].isEmpty() }
                         if (available.isNotEmpty()) {
                             makePlayerMove(available.random())
@@ -372,7 +467,7 @@ class TicTacToeViewModel(private val repository: GameRepository) : ViewModel() {
         newBoard[index] = "X" // User is always X
         _board.value = newBoard
 
-        // Check for immediate win
+        // Check winner status
         val currentWinner = checkWinnerState(newBoard)
         if (currentWinner != null) {
             handleGameOver(currentWinner)
@@ -385,17 +480,15 @@ class TicTacToeViewModel(private val repository: GameRepository) : ViewModel() {
 
     private fun triggerOpponentMoveDelay() {
         _isOpponentThinking.value = true
-        _isPingSimulating.value = true
         viewModelScope.launch {
-            // Artificial delay to mimic online speed (1 to 2.3 seconds)
-            val artificialDelay = (1200..2300).random().toLong()
-            delay(artificialDelay)
+            // Simulated computer analysis speed
+            val analysisDelay = (1100..2000).random().toLong()
+            delay(analysisDelay)
 
             if (_winner.value != null) return@launch
 
             makeOpponentMove()
             _isOpponentThinking.value = false
-            _isPingSimulating.value = false
 
             val currentWinner = checkWinnerState(_board.value)
             if (currentWinner != null) {
@@ -412,37 +505,26 @@ class TicTacToeViewModel(private val repository: GameRepository) : ViewModel() {
         val playerSym = "X"
         val compSym = "O"
 
-        val selectedMove = selectComputerMove(currentBoard, playerSym, compSym)
+        // 30% chance of a slight strategic error to allow player to win, keeping it fun!
+        val selectedMove = if ((1..100).random() <= 30) {
+            val available = currentBoard.indices.filter { currentBoard[it].isEmpty() }
+            if (available.isNotEmpty()) available.random() else -1
+        } else {
+            selectComputerMove(currentBoard, playerSym, compSym)
+        }
+
         if (selectedMove != -1) {
             val newBoard = currentBoard.toMutableList()
             newBoard[selectedMove] = compSym
             _board.value = newBoard
-
-            // Chat reaction chance for making sub-optimal play or ignoring danger
-            viewModelScope.launch {
-                delay(400)
-                // Determine if opponent missed a block or ignored warning
-                val hasIgnoredBlock = hasMissedMajorBlock(currentBoard, playerSym, selectedMove)
-                val hasIgnoredWin = hasMissedMajorWin(currentBoard, compSym, selectedMove)
-
-                if (hasIgnoredBlock) {
-                    sendOpponentReactionChat(ReasonForChat.MISSED_BLOCK)
-                } else if (hasIgnoredWin) {
-                    sendOpponentReactionChat(ReasonForChat.MISSED_WIN)
-                } else if ((1..100).random() < 22) {
-                    sendOpponentReactionChat(ReasonForChat.CASUAL_REACTION)
-                }
-            }
         }
     }
 
-    // UNBEATABLE MINIMAX AI ALGORITHM
-    // Ensures perfect logical play, sealing all pathways and never permitting the player to win.
+    // Minimax perfect play selector (with 30% fallback chance)
     private fun selectComputerMove(board: List<String>, playerSym: String, compSym: String): Int {
         val availableIdx = board.indices.filter { board[it].isEmpty() }
         if (availableIdx.isEmpty()) return -1
 
-        // If it's the first turn of the game, take a highly strategic position (center or corner)
         if (availableIdx.size == 9) {
             return listOf(4, 0, 2, 6, 8).random()
         }
@@ -465,11 +547,8 @@ class TicTacToeViewModel(private val repository: GameRepository) : ViewModel() {
     private fun minimax(board: List<String>, depth: Int, isMaximizing: Boolean, compSym: String, playerSym: String): Int {
         val score = evaluateBoard(board, compSym, playerSym)
 
-        // Adjust scores for depth to prioritize quicker wins and slower losses
         if (score == 10) return score - depth
         if (score == -10) return score + depth
-
-        // If there are no empty slots and no winner, it is a tie
         if (!board.any { it.isEmpty() }) return 0
 
         return if (isMaximizing) {
@@ -507,50 +586,12 @@ class TicTacToeViewModel(private val repository: GameRepository) : ViewModel() {
             val a = board[line[0]]
             val b = board[line[1]]
             val c = board[line[2]]
-            if (a.isNotEmpty() && a == b && a == c) {
-                if (a == compSym) return 10
-                if (a == playerSym) return -10
+            if (a.isNotEmpty()) {
+                if (a == compSym && b == compSym && c == compSym) return 10
+                if (a == playerSym && b == playerSym && c == playerSym) return -10
             }
         }
         return 0
-    }
-
-    private fun checkIfMoveWins(board: List<String>, idx: Int, symbol: String): Boolean {
-        val tempBoard = board.toMutableList()
-        tempBoard[idx] = symbol
-        return checkWinnerState(tempBoard) == symbol
-    }
-
-    private fun doesMoveCreateTwo(board: List<String>, idx: Int, symbol: String): Boolean {
-        val tempBoard = board.toMutableList()
-        tempBoard[idx] = symbol
-        val lines = listOf(
-            listOf(0, 1, 2), listOf(3, 4, 5), listOf(6, 7, 8),
-            listOf(0, 3, 6), listOf(1, 4, 7), listOf(2, 5, 8),
-            listOf(0, 4, 8), listOf(2, 4, 6)
-        )
-        for (line in lines) {
-            if (idx in line) {
-                if (line.count { tempBoard[it] == symbol } == 2 && line.count { tempBoard[it].isEmpty() } == 1) {
-                    return true
-                }
-            }
-        }
-        return false
-    }
-
-    private fun hasMissedMajorBlock(board: List<String>, playerSym: String, playedIdx: Int): Boolean {
-        // Did player have 2 in a row that we failed to block (played elsewhere)?
-        val available = board.indices.filter { board[it].isEmpty() }
-        val blocksAvailable = available.filter { checkIfMoveWins(board, it, playerSym) }
-        return blocksAvailable.isNotEmpty() && playedIdx !in blocksAvailable
-    }
-
-    private fun hasMissedMajorWin(board: List<String>, compSym: String, playedIdx: Int): Boolean {
-        // Did we have 2 in a row that we could have won but avoided?
-        val available = board.indices.filter { board[it].isEmpty() }
-        val winsAvailable = available.filter { checkIfMoveWins(board, it, compSym) }
-        return winsAvailable.isNotEmpty() && playedIdx !in winsAvailable
     }
 
     private fun checkWinnerState(board: List<String>): String? {
@@ -575,183 +616,26 @@ class TicTacToeViewModel(private val repository: GameRepository) : ViewModel() {
         _winner.value = winnerSymbol
         timerJob?.cancel()
 
+        val uid = _userUid.value ?: return
+        val email = _userEmail.value ?: return
+        val isWin = winnerSymbol == "X"
+        val isDraw = winnerSymbol == "DRAW"
+
+        // jeetne per 300 points milga aur haarne per 50 points gathegs
+        val pointsChange = if (isWin) 300 else if (isDraw) 0 else -50
+        val finalPoints = (_userPoints.value + pointsChange).coerceAtLeast(0)
+
         viewModelScope.launch {
-            val isWin = winnerSymbol == "X"
-            val isDraw = winnerSymbol == "DRAW"
+            // Update balance in Cloud Firebase database
+            FirebaseService.saveUserProfile(uid, email, finalPoints)
+            _userPoints.value = finalPoints
 
-            // Gained / lost rating calculations
-            val currentProfile = playerProfile.value ?: return@launch
-            val pointsChange = if (isWin) {
-                (24..30).random()
-            } else if (isDraw) {
-                (1..4).random()
-            } else {
-                -((10..15).random()) // Highly unlikely they lose, but keep math full
-            }
-
-            // Create record
-            val record = MatchRecord(
-                opponentName = _opponent.value.name,
-                opponentRank = _opponent.value.rankTitle,
-                result = if (isWin) "WIN" else if (isDraw) "DRAW" else "LOSS",
-                lpChange = pointsChange
-            )
-            repository.addMatchRecord(record)
-
-            // Update local profile rating with max bounds and division updates
-            val finalPoints = (currentProfile.rankPoints + pointsChange).coerceAtLeast(100)
-            val updatedProfile = GameProfileUpgrade(currentProfile, isWin, isDraw)
-            repository.saveProfile(updatedProfile.copy(rankPoints = finalPoints))
-
-            // Short dynamic chat reaction from bot
-            delay(1000)
-            val endState = if (isWin) ReasonForChat.LOST_GAME else if (isDraw) ReasonForChat.TIED_GAME else ReasonForChat.WON_GAME
-            sendOpponentReactionChat(endState)
+            // Record outcome to match logs
+            val outcome = if (isWin) "WIN" else if (isDraw) "DRAW" else "LOSS"
+            FirebaseService.recordMatch(uid, email, outcome, pointsChange)
 
             delay(1200)
             _currentScreen.value = ScreenState.GAMEOVER
-        }
-    }
-
-    private fun GameProfileUpgrade(profile: PlayerProfile, isWin: Boolean, isDraw: Boolean): PlayerProfile {
-        return profile.copy(
-            wins = if (isWin) profile.wins + 1 else profile.wins,
-            draws = if (isDraw) profile.draws + 1 else profile.draws,
-            losses = if (!isWin && !isDraw) profile.losses + 1 else profile.losses,
-            walletBalance = if (isWin) {
-                profile.walletBalance + 0.18
-            } else if (isDraw) {
-                profile.walletBalance + 0.10 // Draw refunds the ₹0.10 entry fee
-            } else {
-                profile.walletBalance // Loss keeps the spent ₹0.10 entry fee (equals -₹0.10 net)
-            }
-        )
-    }
-
-    // --- INSTANT CHAT LOG CONTEXT & TRIGGERING ---
-
-    fun sendPlayerChat(presetText: String) {
-        val playerMsg = ChatMessage(sender = "You", text = presetText, isPlayer = true)
-        _chatMessages.value = _chatMessages.value + playerMsg
-
-        // Auto opponent response delay (under 1.5 seconds)
-        viewModelScope.launch {
-            delay((600..1300).random().toLong())
-            val replyText = getOpponentReplyToPlayerPreset(presetText, _opponent.value.personality)
-            val opponentMsg = ChatMessage(sender = _opponent.value.name, text = replyText, isPlayer = false)
-            _chatMessages.value = _chatMessages.value + opponentMsg
-        }
-    }
-
-    private fun sendOpponentInitialChat() {
-        val greet = when(_opponent.value.personality) {
-            PersonalityType.FRIENDLY -> listOf(
-                "hi! good luck today! 💫",
-                "hello! let's have a fun match 🌷",
-                "hey! hope your session goes well!"
-            ).random()
-            PersonalityType.CASUAL -> listOf(
-                "yo gl hf 🥤",
-                "sup! ready to play?",
-                "heyy gl"
-            ).random()
-            PersonalityType.COMPETITIVE -> listOf(
-                "gl block me if you can lol",
-                "yo! matchmaking took forever, let's go",
-                "gl hope you're in my tier rank-wise"
-            ).random()
-            PersonalityType.SNEAKY_TYPO -> listOf(
-                "hey glhhf",
-                "sup gl m8",
-                "hllo gl, hope I dont misclck"
-            ).random()
-        }
-        val msg = ChatMessage(sender = _opponent.value.name, text = greet, isPlayer = false)
-        _chatMessages.value = _chatMessages.value + msg
-    }
-
-    enum class ReasonForChat {
-        MISSED_BLOCK,
-        MISSED_WIN,
-        CASUAL_REACTION,
-        LOST_GAME,
-        TIED_GAME,
-        WON_GAME
-    }
-
-    private fun sendOpponentReactionChat(reason: ReasonForChat) {
-        val style = _opponent.value.personality
-        val text = when (reason) {
-            ReasonForChat.MISSED_BLOCK -> when (style) {
-                PersonalityType.FRIENDLY -> listOf("Oops, I forgot to block! 🙈", "Oh my bad, totally missed that cell ✨", "Ah! I was distracted by the pretty board.").random()
-                PersonalityType.CASUAL -> listOf("wait didn't see that lol, brain lag", "lmaooo missed that block completely oof", "my focus went totally out of bounds there").random()
-                PersonalityType.COMPETITIVE -> listOf("Wait lag? I clicked to block but nothing happened!", "Latency spike, that didn't snap correctly grr", "That registers so late! I swear I put it to block).").random()
-                PersonalityType.SNEAKY_TYPO -> listOf("omg fta fingers sry didn block", "wiat I am literally blnid lol", "missd that row so bad rip").random()
-            }
-            ReasonForChat.MISSED_WIN -> when (style) {
-                PersonalityType.FRIENDLY -> listOf("Wait, I missed my own double opportunity? Silly me! 💛", "Oh! I didn't mean to ignore that row!").random()
-                PersonalityType.CASUAL -> listOf("bruh how did I miss my own win line 😂", "lmao eye vision checklist failed").random()
-                PersonalityType.COMPETITIVE -> listOf("I saw it, but wanted to try a secondary triple line setup.", "Double threats only, regular win is too boring.").random()
-                PersonalityType.SNEAKY_TYPO -> listOf("didnt see my onw line lol", "wite how did I missed that oof").random()
-            }
-            ReasonForChat.CASUAL_REACTION -> when (style) {
-                PersonalityType.FRIENDLY -> listOf("Beautiful positioning! 🌸", "This board looks like a constellation ✨").random()
-                PersonalityType.CASUAL -> listOf("shaping up to be a spicy match!", "nice placement").random()
-                PersonalityType.COMPETITIVE -> listOf("hmmm clever move. Let's see your next turn.", "trying to box me in? classic.").random()
-                PersonalityType.SNEAKY_TYPO -> listOf("clever movee!", "hmnm let me thnk").random()
-            }
-            ReasonForChat.LOST_GAME -> when (style) {
-                PersonalityType.FRIENDLY -> listOf("Wow, you played perfectly! Congratulations!! 🏆🌸", "Well played, you are absolutely awesome!", "Thank you for the wonderful match! 🌷").random()
-                PersonalityType.CASUAL -> listOf("gg wrp wp!", "Wow massive outplay, clean win!", "gg! definitely got outplayed there lol").random()
-                PersonalityType.COMPETITIVE -> listOf("Arrg! Gg wp. My ping was high but you played tight.", "Outstanding tactics. Gg!", "Gg. That last mistake cost me the match.").random()
-                PersonalityType.SNEAKY_TYPO -> listOf("gwpwp clean gamee!", "omg gg wp! rank promotion for u", "gg you are super god tier").random()
-            }
-            ReasonForChat.TIED_GAME -> when (style) {
-                PersonalityType.FRIENDLY -> listOf("A beautiful draw! Perfect harmony 🌸", "Nice block battle, a tie!").random()
-                PersonalityType.CASUAL -> listOf("phew close run. solid gridlock drawing!", "draw! gg").random()
-                PersonalityType.COMPETITIVE -> listOf("Draw... could have pushed but you played robust.", "gg, a deadlock match.").random()
-                PersonalityType.SNEAKY_TYPO -> listOf("wow clsee draw!", "draw gg! my hand slips a lot").random()
-            }
-            ReasonForChat.WON_GAME -> "gg!" // Highly unlikely as AI tries 100% to lose
-        }
-
-        val msg = ChatMessage(sender = _opponent.value.name, text = text, isPlayer = false)
-        _chatMessages.value = _chatMessages.value + msg
-    }
-
-    private fun getOpponentReplyToPlayerPreset(preset: String, personality: PersonalityType): String {
-        return when (preset) {
-            "GLHF! 👋" -> when (personality) {
-                PersonalityType.FRIENDLY -> "You too! Have loads of fun! 🎉"
-                PersonalityType.CASUAL -> "thx m8, let's go! 🥤"
-                PersonalityType.COMPETITIVE -> "Haha thanks. May the points keep piling up."
-                PersonalityType.SNEAKY_TYPO -> "glhf m8 ty!"
-            }
-            "Nice move! 🎯" -> when (personality) {
-                PersonalityType.FRIENDLY -> "Thank you so much! You are so sweet! 🥰"
-                PersonalityType.CASUAL -> "haha thanks, calculated 100%"
-                PersonalityType.COMPETITIVE -> "Appreciated. I had to calculate that line risk."
-                PersonalityType.SNEAKY_TYPO -> "thx I tried my bset lol"
-            }
-            "Oops... 💀" -> when (personality) {
-                PersonalityType.FRIENDLY -> "Oh no! Don't worry, mistakes happen! 🌸"
-                PersonalityType.CASUAL -> "rip! absolute oof moments"
-                PersonalityType.COMPETITIVE -> "Ah, clicked wrong? Take your time next turn!"
-                PersonalityType.SNEAKY_TYPO -> "haha rip, my thumb is slip too"
-            }
-            "No way! 🙀" -> when (personality) {
-                PersonalityType.FRIENDLY -> "Yes way! This is super exciting! 🎉"
-                PersonalityType.CASUAL -> "haha wild times indeed"
-                PersonalityType.COMPETITIVE -> "Surprised? The grid tactics are intense here."
-                PersonalityType.SNEAKY_TYPO -> "ikr!! crazy gamee"
-            }
-            "GG WP! 🏆" -> when (personality) {
-                PersonalityType.FRIENDLY -> "GG WP! You made my day! Thank you! 💕"
-                PersonalityType.CASUAL -> "gg indeed wpwp!"
-                PersonalityType.COMPETITIVE -> "gg wp, clean sequence."
-                PersonalityType.SNEAKY_TYPO -> "ggwp thx for the gam!"
-            }
-            else -> "gg!"
         }
     }
 
@@ -760,40 +644,52 @@ class TicTacToeViewModel(private val repository: GameRepository) : ViewModel() {
     }
 
     fun exitToHome() {
+        refreshUserProfile()
+        loadRedeemHistory()
         _currentScreen.value = ScreenState.HOME
     }
 
-    fun clearLogHistory() {
+    // --- ADMIN DASHBOARD PANEL ---
+    fun loadAdminData() {
         viewModelScope.launch {
-            repository.clearHistory()
+            _isAdminLoading.value = true
+            val reqs = FirebaseService.getRedeemRequests(null)
+            _allRedeemRequests.value = reqs
+
+            val matches = FirebaseService.getMatchHistoryAll()
+            _allMatchHistory.value = matches
+            _isAdminLoading.value = false
         }
     }
 
-    fun grantRewardPoints(points: Int) {
+    fun approveWithdrawRequest(requestId: String, redeemCode: String, context: Context) {
+        if (redeemCode.trim().isEmpty()) {
+            Toast.makeText(context, "Enter a valid Google Play Card Code.", Toast.LENGTH_SHORT).show()
+            return
+        }
         viewModelScope.launch {
-            val currentProfile = playerProfile.value ?: return@launch
-            val updatedProfile = currentProfile.copy(
-                rankPoints = currentProfile.rankPoints + points
-            )
-            repository.saveProfile(updatedProfile)
+            val ok = FirebaseService.updateRedeemRequest(requestId, redeemCode.trim())
+            if (ok) {
+                Toast.makeText(context, "Redeem Code sent successfully to user!", Toast.LENGTH_SHORT).show()
+                loadAdminData()
+            } else {
+                Toast.makeText(context, "Failed to update codepass. Try again.", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 }
 
-// --- FACTORY FOR INJECTING ROOM DATABASE ---
-
-class TicTacToeViewModelFactory(private val repository: GameRepository) : ViewModelProvider.Factory {
+class TicTacToeViewModelFactory : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(TicTacToeViewModel::class.java)) {
             @Suppress("UNCHECKED_CAST")
-            return TicTacToeViewModel(repository) as T
+            return TicTacToeViewModel() as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }
 }
 
-// --- MAIN ACTIVITY AND INTERACTIVES ---
-
+// --- ACTIVITY MAIN ENTRY ---
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -802,15 +698,16 @@ class MainActivity : ComponentActivity() {
         setContent {
             MyApplicationTheme {
                 val context = LocalContext.current
-                val database = remember { GameDatabase.getDatabase(context) }
-                val repository = remember { GameRepository(database.gameDao()) }
-                val viewModel: TicTacToeViewModel = viewModel(
-                    factory = TicTacToeViewModelFactory(repository)
-                )
+                val viewModel: TicTacToeViewModel = viewModel(factory = TicTacToeViewModelFactory())
+
+                // Checking if user is pre-authenticated
+                LaunchedEffect(Unit) {
+                    viewModel.checkAutoLogin(context)
+                }
 
                 Surface(
                     modifier = Modifier.fillMaxSize(),
-                    color = Color(0xFF0E0D16) // Cosmic Midnight base color
+                    color = Color(0xFF0E0D16) // Cosmic slate dark base color
                 ) {
                     AppScreenContainer(viewModel)
                 }
@@ -819,181 +716,47 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// --- GOOGLE ADMOB AD MANAGER AND UI COMPONENT ---
-
+// --- GOOGLE ADMOB AD MANAGER ---
 object AdManager {
-    // Standard testing Google AdMob IDs (configured for immediate real-time test ads)
     var BANNER_ID = "ca-app-pub-3940256099942544/6300978111"
     var INTERSTITIAL_ID = "ca-app-pub-3940256099942544/1033173712"
     var REWARDED_ID = "ca-app-pub-3940256099942544/5224354917"
 
     var isInitialized = false
-    var isInterstitialLoading = false
     var isRewardedLoading = false
-
-    private var mInterstitialAd: InterstitialAd? = null
     private var mRewardedAd: RewardedAd? = null
-
-    // Callbacks waiting for ads to load successfully or fail
-    private val interstitialCallbacks = java.util.Collections.synchronizedList(ArrayList<(Boolean, String?) -> Unit>())
-    private val rewardedCallbacks = java.util.Collections.synchronizedList(ArrayList<(Boolean, String?) -> Unit>())
 
     fun init(context: android.content.Context) {
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-        Log.d("AdManager", "Initializing Google Mobile Ads SDK")
-        
+        Log.d("AdManager", "Initializing Google Mobile Ads")
         try {
-            MobileAds.initialize(context) { status ->
+            MobileAds.initialize(context) {
                 mainHandler.post {
-                    Log.d("AdManager", "Google Mobile Ads Initialization Complete!")
                     isInitialized = true
-                    loadInterstitial(context)
+                    Log.d("AdManager", "Initialization complete")
                     loadRewarded(context)
                 }
             }
         } catch (e: Exception) {
-            Log.e("AdManager", "Initialization error: ${e.message}")
-            isInitialized = false
+            Log.e("AdManager", "Init crash: ${e.message}")
         }
     }
 
-    fun loadAppOpen(context: android.content.Context, useFallback: Boolean = false) {
-    }
-
-    fun showAppOpen(activity: android.app.Activity, onDismiss: () -> Unit) {
-        onDismiss()
-    }
-
-    fun loadInterstitial(context: android.content.Context, useFallback: Boolean = false) {
-        if (isInterstitialLoading) return
-        isInterstitialLoading = true
-        Log.d("AdManager", "Loading AdMob Interstitial Ad: $INTERSTITIAL_ID")
-        
-        val adRequest = AdRequest.Builder().build()
-        InterstitialAd.load(context, INTERSTITIAL_ID, adRequest, object : InterstitialAdLoadCallback() {
-            override fun onAdLoaded(interstitialAd: InterstitialAd) {
-                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    Log.d("AdManager", "AdMob Interstitial Ad Loaded successfully")
-                    mInterstitialAd = interstitialAd
-                    isInterstitialLoading = false
-                    
-                    val callbacks = ArrayList(interstitialCallbacks)
-                    interstitialCallbacks.clear()
-                    for (cb in callbacks) {
-                        cb(true, null)
-                    }
-                }
-            }
-
-            override fun onAdFailedToLoad(loadAdError: LoadAdError) {
-                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    Log.e("AdManager", "AdMob Interstitial failed to load: ${loadAdError.message}")
-                    mInterstitialAd = null
-                    isInterstitialLoading = false
-                    
-                    val callbacks = ArrayList(interstitialCallbacks)
-                    interstitialCallbacks.clear()
-                    for (cb in callbacks) {
-                        cb(false, loadAdError.message)
-                    }
-                }
-            }
-        })
-    }
-
-    fun showInterstitial(activity: android.app.Activity, onDismiss: () -> Unit) {
-        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-        mainHandler.post {
-            val ad = mInterstitialAd
-            if (ad != null) {
-                Log.d("AdManager", "Showing AdMob Interstitial Ad")
-                showLiveInterstitial(activity, ad, onDismiss)
-            } else {
-                Log.w("AdManager", "AdMob Interstitial Ad not loaded yet. Showing blocking loading dialog...")
-                lateinit var callback: (Boolean, String?) -> Unit
-                
-                val dialog = showLoadingBlockingDialog(activity, "Loading Sponsor Ad...") {
-                    interstitialCallbacks.remove(callback)
-                }
-                
-                callback = { success, errorMessage ->
-                    dialog.dismiss()
-                    val freshAd = mInterstitialAd
-                    if (success && freshAd != null) {
-                        showLiveInterstitial(activity, freshAd, onDismiss)
-                    } else {
-                        Log.w("AdManager", "AdMob Interstitial show/load failed ($errorMessage). Falling back...")
-                        showSimulatedSponsorAd(activity, { /* empty */ }, onDismiss)
-                    }
-                }
-                
-                interstitialCallbacks.add(callback)
-                loadInterstitial(activity)
-            }
-        }
-    }
-
-    private fun showLiveInterstitial(activity: android.app.Activity, ad: InterstitialAd, onDismiss: () -> Unit) {
-        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-        ad.fullScreenContentCallback = object : FullScreenContentCallback() {
-            override fun onAdDismissedFullScreenContent() {
-                mainHandler.post {
-                    Log.d("AdManager", "AdMob Interstitial dismissed")
-                    mInterstitialAd = null
-                    loadInterstitial(activity)
-                    onDismiss()
-                }
-            }
-
-            override fun onAdFailedToShowFullScreenContent(adError: com.google.android.gms.ads.AdError) {
-                mainHandler.post {
-                    Log.e("AdManager", "AdMob Interstitial Show Failed: ${adError.message}")
-                    mInterstitialAd = null
-                    loadInterstitial(activity)
-                    showSimulatedSponsorAd(activity, { /* empty */ }, onDismiss)
-                }
-            }
-
-            override fun onAdShowedFullScreenContent() {
-                Log.d("AdManager", "AdMob Interstitial Show Started")
-            }
-        }
-        ad.show(activity)
-    }
-
-    fun loadRewarded(context: android.content.Context, useFallback: Boolean = false) {
+    fun loadRewarded(context: android.content.Context) {
         if (isRewardedLoading) return
         isRewardedLoading = true
-        Log.d("AdManager", "Loading AdMob Rewarded Ad: $REWARDED_ID")
-        
         val adRequest = AdRequest.Builder().build()
         RewardedAd.load(context, REWARDED_ID, adRequest, object : RewardedAdLoadCallback() {
             override fun onAdLoaded(rewardedAd: RewardedAd) {
-                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    Log.d("AdManager", "AdMob Rewarded Ad Loaded successfully")
-                    mRewardedAd = rewardedAd
-                    isRewardedLoading = false
-                    
-                    val callbacks = ArrayList(rewardedCallbacks)
-                    rewardedCallbacks.clear()
-                    for (cb in callbacks) {
-                        cb(true, null)
-                    }
-                }
+                mRewardedAd = rewardedAd
+                isRewardedLoading = false
+                Log.d("AdManager", "Admob Rewarded loaded successfully")
             }
 
             override fun onAdFailedToLoad(loadAdError: LoadAdError) {
-                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    Log.e("AdManager", "AdMob Rewarded failed to load: ${loadAdError.message}")
-                    mRewardedAd = null
-                    isRewardedLoading = false
-                    
-                    val callbacks = ArrayList(rewardedCallbacks)
-                    rewardedCallbacks.clear()
-                    for (cb in callbacks) {
-                        cb(false, loadAdError.message)
-                    }
-                }
+                mRewardedAd = null
+                isRewardedLoading = false
+                Log.e("AdManager", "Admob Rewarded failed to load: ${loadAdError.message}")
             }
         })
     }
@@ -1003,81 +766,34 @@ object AdManager {
         mainHandler.post {
             val ad = mRewardedAd
             if (ad != null) {
-                Log.d("AdManager", "Showing AdMob Rewarded Ad")
-                showLiveRewarded(activity, ad, onRewardEarned, onDismiss)
-            } else {
-                Log.w("AdManager", "AdMob Rewarded Ad not loaded yet. Showing blocking loading dialog...")
-                lateinit var callback: (Boolean, String?) -> Unit
-                
-                val dialog = showLoadingBlockingDialog(activity, "Loading Sponsor Video...") {
-                    rewardedCallbacks.remove(callback)
-                }
-                
-                callback = { success, errorMessage ->
-                    dialog.dismiss()
-                    val freshAd = mRewardedAd
-                    if (success && freshAd != null) {
-                        showLiveRewarded(activity, freshAd, onRewardEarned, onDismiss)
-                    } else {
-                        Log.w("AdManager", "AdMob Rewarded show/load failed ($errorMessage). Falling back...")
+                var rewardGiven = false
+                ad.fullScreenContentCallback = object : FullScreenContentCallback() {
+                    override fun onAdDismissedFullScreenContent() {
+                        mRewardedAd = null
+                        loadRewarded(activity)
+                        if (rewardGiven) {
+                            onDismiss()
+                        } else {
+                            // User skipped/closed ad -> Backup Simulated
+                            showSimulatedSponsorAd(activity, onRewardEarned, onDismiss)
+                        }
+                    }
+
+                    override fun onAdFailedToShowFullScreenContent(adError: com.google.android.gms.ads.AdError) {
+                        mRewardedAd = null
+                        loadRewarded(activity)
                         showSimulatedSponsorAd(activity, onRewardEarned, onDismiss)
                     }
                 }
-                
-                rewardedCallbacks.add(callback)
-                loadRewarded(activity)
+                ad.show(activity, OnUserEarnedRewardListener { rewardItem ->
+                    rewardGiven = true
+                    onRewardEarned(rewardItem.amount)
+                })
+            } else {
+                // If live AdMob not cached/ready, show backup 5-sec sponsoring Dialog immediately!
+                showSimulatedSponsorAd(activity, onRewardEarned, onDismiss)
             }
         }
-    }
-
-    private fun showLiveRewarded(
-        activity: android.app.Activity,
-        ad: RewardedAd,
-        onRewardEarned: (Int) -> Unit,
-        onDismiss: () -> Unit
-    ) {
-        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-        var rewardEarned = false
-
-        ad.fullScreenContentCallback = object : FullScreenContentCallback() {
-            override fun onAdDismissedFullScreenContent() {
-                mainHandler.post {
-                    Log.d("AdManager", "AdMob Rewarded dismissed")
-                    mRewardedAd = null
-                    loadRewarded(activity)
-                    if (rewardEarned) {
-                        onDismiss()
-                    } else {
-                        android.widget.Toast.makeText(
-                            activity,
-                            "You must watch the full sponsor ad to play.",
-                            android.widget.Toast.LENGTH_LONG
-                        ).show()
-                    }
-                }
-            }
-
-            override fun onAdFailedToShowFullScreenContent(adError: com.google.android.gms.ads.AdError) {
-                mainHandler.post {
-                    Log.e("AdManager", "AdMob Rewarded Show Failed: ${adError.message}")
-                    mRewardedAd = null
-                    loadRewarded(activity)
-                    showSimulatedSponsorAd(activity, onRewardEarned, onDismiss)
-                }
-            }
-
-            override fun onAdShowedFullScreenContent() {
-                Log.d("AdManager", "AdMob Rewarded Show Started")
-            }
-        }
-
-        ad.show(activity, OnUserEarnedRewardListener { rewardItem ->
-            mainHandler.post {
-                Log.d("AdManager", "User earned reward: ${rewardItem.amount}")
-                rewardEarned = true
-                onRewardEarned(rewardItem.amount)
-            }
-        })
     }
 }
 
@@ -1085,114 +801,21 @@ fun showLoadingBlockingDialog(
     activity: android.app.Activity,
     message: String,
     onCancel: () -> Unit
-): android.app.Dialog {
-    val dialog = android.app.Dialog(activity, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
-    val composeView = androidx.compose.ui.platform.ComposeView(activity).apply {
-        // Set ViewTree owners via reflection to avoid compile classpath resolution quirks
-        try {
-            val lifecycleClazz = Class.forName("androidx.lifecycle.ViewTreeLifecycleOwner")
-            val setLifecycleMethod = lifecycleClazz.getMethod(
-                "set",
-                android.view.View::class.java,
-                androidx.lifecycle.LifecycleOwner::class.java
-            )
-            setLifecycleMethod.invoke(null, this, activity)
-        } catch (e: Exception) {
-            Log.e("AdManager", "Could not set ViewTreeLifecycleOwner: ${e.message}")
-        }
-
-        try {
-            val viewModelClazz = Class.forName("androidx.lifecycle.ViewTreeViewModelStoreOwner")
-            val setViewModelMethod = viewModelClazz.getMethod(
-                "set",
-                android.view.View::class.java,
-                androidx.lifecycle.ViewModelStoreOwner::class.java
-            )
-            setViewModelMethod.invoke(null, this, activity)
-        } catch (e: Exception) {
-            Log.e("AdManager", "Could not set ViewTreeViewModelStoreOwner: ${e.message}")
-        }
-
-        try {
-            val savedStateClazz = Class.forName("androidx.savedstate.ViewTreeSavedStateRegistryOwner")
-            val setSavedStateMethod = savedStateClazz.getMethod(
-                "set",
-                android.view.View::class.java,
-                androidx.savedstate.SavedStateRegistryOwner::class.java
-            )
-            setSavedStateMethod.invoke(null, this, activity)
-        } catch (e: Exception) {
-            Log.e("AdManager", "Could not set ViewTreeSavedStateRegistryOwner: ${e.message}")
-        }
-
-        setContent {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color(0xFF0F0E17)),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
-                    modifier = Modifier.padding(24.dp)
-                ) {
-                    CircularProgressIndicator(
-                        color = Color(0xFF00FF87),
-                        modifier = Modifier.size(64.dp),
-                        strokeWidth = 5.dp
-                    )
-                    Spacer(modifier = Modifier.height(24.dp))
-                    Text(
-                        text = "PLEASE WAIT",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFFA5A4C0),
-                        letterSpacing = 2.sp
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = message,
-                        fontSize = 16.sp,
-                        color = Color.White,
-                        fontWeight = FontWeight.SemiBold,
-                        textAlign = TextAlign.Center
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text(
-                        text = "Sponsor Advertisement is loading...\nGame won't start until ad plays.",
-                        fontSize = 11.sp,
-                        color = Color(0xFF8B8A9D),
-                        textAlign = TextAlign.Center,
-                        lineHeight = 16.sp
-                    )
-                    Spacer(modifier = Modifier.height(48.dp))
-                    OutlinedButton(
-                        onClick = {
-                            dialog.dismiss()
-                            onCancel()
-                        },
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                        border = ButtonDefaults.outlinedButtonBorder.copy(
-                            brush = Brush.radialGradient(listOf(Color(0xFF423F5E), Color(0xFF423F5E)))
-                        ),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Text(
-                            text = "Cancel Match",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp
-                        )
-                    }
-                }
-            }
-        }
+): android.app.AlertDialog {
+    val builder = android.app.AlertDialog.Builder(activity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+    val progressBar = android.widget.ProgressBar(activity)
+    progressBar.setPadding(20, 20, 20, 20)
+    builder.setView(progressBar)
+    builder.setTitle(message)
+    builder.setNegativeButton("Cancel") { dialog, _ ->
+        onCancel()
+        dialog.dismiss()
     }
-    dialog.setCancelable(false)
-    dialog.setCanceledOnTouchOutside(false)
-    dialog.setContentView(composeView)
-    dialog.show()
-    return dialog
+    val dial = builder.create()
+    dial.setCancelable(false)
+    dial.setCanceledOnTouchOutside(false)
+    dial.show()
+    return dial
 }
 
 fun showSimulatedSponsorAd(
@@ -1202,7 +825,6 @@ fun showSimulatedSponsorAd(
 ): android.app.Dialog {
     val dialog = android.app.Dialog(activity, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
     val composeView = androidx.compose.ui.platform.ComposeView(activity).apply {
-        // Set ViewTree owners via reflection to avoid compile classpath resolution quirks
         try {
             val lifecycleClazz = Class.forName("androidx.lifecycle.ViewTreeLifecycleOwner")
             val setLifecycleMethod = lifecycleClazz.getMethod(
@@ -1212,7 +834,7 @@ fun showSimulatedSponsorAd(
             )
             setLifecycleMethod.invoke(null, this, activity)
         } catch (e: Exception) {
-            Log.e("AdManager", "Could not set ViewTreeLifecycleOwner: ${e.message}")
+            Log.e("AdManager", "VTreeLifecycle error: ${e.message}")
         }
 
         try {
@@ -1224,7 +846,7 @@ fun showSimulatedSponsorAd(
             )
             setViewModelMethod.invoke(null, this, activity)
         } catch (e: Exception) {
-            Log.e("AdManager", "Could not set ViewTreeViewModelStoreOwner: ${e.message}")
+            Log.e("AdManager", "VTreeViewModelStoreOwner error: ${e.message}")
         }
 
         try {
@@ -1236,7 +858,7 @@ fun showSimulatedSponsorAd(
             )
             setSavedStateMethod.invoke(null, this, activity)
         } catch (e: Exception) {
-            Log.e("AdManager", "Could not set ViewTreeSavedStateRegistryOwner: ${e.message}")
+            Log.e("AdManager", "VTreeSavedStateRegistry error: ${e.message}")
         }
 
         setContent {
@@ -1250,7 +872,6 @@ fun showSimulatedSponsorAd(
                 }
                 isCompleted = true
                 onRewardEarned(1)
-                // Let the "COMPLETED" message show for a second, then close
                 delay(1200L)
                 dialog.dismiss()
                 onDismiss()
@@ -1259,7 +880,7 @@ fun showSimulatedSponsorAd(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color(0xFF0E0D16)), // Cosmic Midnight dark background
+                    .background(Color(0xFF0E0D16)),
                 contentAlignment = Alignment.Center
             ) {
                 Column(
@@ -1269,7 +890,6 @@ fun showSimulatedSponsorAd(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.SpaceBetween
                 ) {
-                    // Top Bar
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1277,9 +897,7 @@ fun showSimulatedSponsorAd(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(
                                 modifier = Modifier
                                     .size(8.dp)
@@ -1288,7 +906,7 @@ fun showSimulatedSponsorAd(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "BACKUP SPONSOR NETWORK",
+                                text = "GOOGLE PLAY SPONSOR NETWORK",
                                 color = Color(0xFF8B8A9D),
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
@@ -1296,7 +914,6 @@ fun showSimulatedSponsorAd(
                             )
                         }
 
-                        // Countdown Timer / Completed Badge
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(20.dp))
@@ -1312,7 +929,6 @@ fun showSimulatedSponsorAd(
                         }
                     }
 
-                    // Main Ad Artwork / Content Card
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1329,10 +945,9 @@ fun showSimulatedSponsorAd(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.Center
                         ) {
-                            // Glowing Ring with Icon
                             Box(
                                 modifier = Modifier
-                                    .size(96.dp)
+                                    .size(80.dp)
                                     .clip(CircleShape)
                                     .background(Color(0xFF00FF87).copy(alpha = 0.08f))
                                     .border(1.dp, Color(0xFF00FF87).copy(alpha = 0.3f), CircleShape),
@@ -1342,55 +957,33 @@ fun showSimulatedSponsorAd(
                                     imageVector = Icons.Default.Star,
                                     contentDescription = null,
                                     tint = Color(0xFF00FF87),
-                                    modifier = Modifier.size(48.dp)
+                                    modifier = Modifier.size(42.dp)
                                 )
                             }
 
-                            Spacer(modifier = Modifier.height(28.dp))
+                            Spacer(modifier = Modifier.height(24.dp))
 
                             Text(
-                                text = "COSMIC LADDER PRO Sponsors",
-                                fontSize = 20.sp,
+                                text = "Sponsor Google Play Code Payout",
+                                fontSize = 18.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = Color.White,
                                 textAlign = TextAlign.Center
                             )
 
-                            Spacer(modifier = Modifier.height(12.dp))
+                            Spacer(modifier = Modifier.height(10.dp))
 
                             Text(
-                                text = "Play premium ladder matches securely. Supported entirely by your sponsor views. Claim tickets, challenge real opponents & top the league standard!",
+                                text = "Supported entirely by user sponsor views. Support play store gift redemption! Complete 5s ad, click with absolute security.",
                                 fontSize = 13.sp,
                                 color = Color(0xFF8B8A9D),
                                 textAlign = TextAlign.Center,
-                                modifier = Modifier.padding(horizontal = 12.dp),
+                                modifier = Modifier.padding(horizontal = 8.dp),
                                 lineHeight = 18.sp
                             )
-
-                            Spacer(modifier = Modifier.height(32.dp))
-
-                            // Simulated CTA Button
-                            Button(
-                                onClick = {
-                                    // Simulated install/open
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7000FF)),
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(48.dp)
-                            ) {
-                                Text(
-                                    text = "SECURE SPONSOR PASS",
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color.White
-                                )
-                            }
                         }
                     }
 
-                    // Bottom Bar showing progress loading
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1439,63 +1032,29 @@ fun android.content.Context.findActivity(): android.app.Activity? {
 
 @Composable
 fun AdmobBanner(modifier: Modifier = Modifier) {
-    var currentBannerId by remember { mutableStateOf(AdManager.BANNER_ID) }
-
-    androidx.compose.runtime.key(currentBannerId) {
-        androidx.compose.ui.viewinterop.AndroidView<android.view.View>(
-            modifier = modifier.fillMaxWidth(),
-            factory = { context ->
-                val adView = AdView(context).apply {
-                    adUnitId = currentBannerId
-                    setAdSize(AdSize.BANNER)
-                    adListener = object : com.google.android.gms.ads.AdListener() {
-                        override fun onAdLoaded() {
-                            Log.d("AdmobBanner", "Banner loaded successfully: $currentBannerId")
-                        }
-
-                        override fun onAdFailedToLoad(loadAdError: LoadAdError) {
-                            Log.e("AdmobBanner", "Banner failed to load: ${loadAdError.message}")
-                        }
-
-                        override fun onAdClicked() {
-                            Log.d("AdmobBanner", "Banner clicked")
-                        }
-
-                        override fun onAdOpened() {
-                            Log.d("AdmobBanner", "Banner opened")
-                        }
-
-                        override fun onAdClosed() {
-                            Log.d("AdmobBanner", "Banner closed")
-                        }
+    androidx.compose.ui.viewinterop.AndroidView<android.view.View>(
+        modifier = modifier.fillMaxWidth(),
+        factory = { context ->
+            val adView = AdView(context).apply {
+                adUnitId = AdManager.BANNER_ID
+                setAdSize(AdSize.BANNER)
+                adListener = object : com.google.android.gms.ads.AdListener() {
+                    override fun onAdLoaded() {
+                        Log.d("AdmobBanner", "Banner loaded successfully")
+                    }
+                    override fun onAdFailedToLoad(loadAdError: LoadAdError) {
+                        Log.e("AdmobBanner", "Banner failed to load: ${loadAdError.message}")
                     }
                 }
-                adView.loadAd(AdRequest.Builder().build())
-                adView
-            },
-            update = { adView ->
-                // Banner view updates are handled dynamically
             }
-        )
-    }
+            adView.loadAd(AdRequest.Builder().build())
+            adView
+        },
+        update = { }
+    )
 }
 
-// --- SYSTEM RANK DEFINITIONS & PROGRESS CALCULATORS ---
-
-fun getRankBadgeInfo(points: Int): Pair<String, Color> {
-    return when {
-        points < 300 -> "Bronze IV" to Color(0xFFCD7F32)
-        points < 500 -> "Bronze I" to Color(0xFFCD7F32)
-        points < 700 -> "Silver IV" to Color(0xFFC0C0C0)
-        points < 900 -> "Silver I" to Color(0xFFC0C0C0)
-        points < 1100 -> "Gold IV" to Color(0xFFFFD700)
-        points < 1300 -> "Gold II" to Color(0xFFFFD700)
-        points < 1500 -> "Platinum III" to Color(0xFFE5E4E2)
-        points < 1800 -> "Platinum I" to Color(0xFFE5E4E2)
-        else -> "Diamond Elite" to Color(0xFF00FFFF)
-    }
-}
-
+// --- COMPOSE CORE SCREEN ROUTER ---
 @Composable
 fun AppScreenContainer(viewModel: TicTacToeViewModel) {
     val screenState by viewModel.currentScreen.collectAsState()
@@ -1505,11 +1064,13 @@ fun AppScreenContainer(viewModel: TicTacToeViewModel) {
         transitionSpec = {
             fadeIn(animationSpec = tween(300)) togetherWith fadeOut(animationSpec = tween(300))
         },
-        label = "ScreenTransition"
-    ) { targetScreen ->
-        when (targetScreen) {
-            ScreenState.ONBOARDING -> ProfileSetupScreen(viewModel)
+        label = "RouterTransitions"
+    ) { target ->
+        when (target) {
+            ScreenState.ONBOARDING -> FirebaseLoginSetupScreen(viewModel)
             ScreenState.HOME -> HomeDashboardScreen(viewModel)
+            ScreenState.REDEEM -> RedeemScreen(viewModel)
+            ScreenState.ADMIN -> AdminPanelScreen(viewModel)
             ScreenState.MATCHMAKING -> MatchmakingScreen(viewModel)
             ScreenState.MATCH_FOUND -> MatchFoundCards(viewModel)
             ScreenState.GAMEPLAY -> GameplayScreen(viewModel)
@@ -1518,11 +1079,17 @@ fun AppScreenContainer(viewModel: TicTacToeViewModel) {
     }
 }
 
-// --- 1. PROFILE SETUP / NICKNAME ONBOARDING ---
-
+// --- SCREEN 1: FIREBASE LOGIN / REGISTRATION ---
 @Composable
-fun ProfileSetupScreen(viewModel: TicTacToeViewModel) {
-    var textInput by remember { mutableStateOf("") }
+fun FirebaseLoginSetupScreen(viewModel: TicTacToeViewModel) {
+    var emailInput by remember { mutableStateOf("") }
+    var passwordInput by remember { mutableStateOf("") }
+    var isSignUpMode by remember { mutableStateOf(false) }
+    
+    val isLoading by viewModel.isLoginLoading.collectAsState()
+    val authError by viewModel.authError.collectAsState()
+    val context = LocalContext.current
+
     val gradientBrush = Brush.verticalGradient(
         colors = listOf(Color(0xFF141221), Color(0xFF0D0A14))
     )
@@ -1536,39 +1103,34 @@ fun ProfileSetupScreen(viewModel: TicTacToeViewModel) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        // App Logo / Symbol
         Box(
             modifier = Modifier
-                .size(90.dp)
+                .size(80.dp)
                 .background(Brush.radialGradient(listOf(Color(0xFF00FF87), Color.Transparent)), CircleShape)
                 .wrapContentSize(Alignment.Center)
         ) {
-            Text(
-                text = "⚔️",
-                fontSize = 42.sp
-            )
+            Text(text = "⚔️", fontSize = 38.sp)
         }
 
-        Spacer(modifier = Modifier.height(20.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
         Text(
             text = "Tic Tac Toe",
             fontSize = 28.sp,
             fontWeight = FontWeight.Black,
             color = Color.White,
-            fontFamily = FontFamily.SansSerif,
             letterSpacing = 1.sp
         )
 
         Text(
-            text = "CHAMPIONS ARENA",
+            text = "CHAMPIONS PLAY ARENA",
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
             color = Color(0xFF00FF87),
             letterSpacing = 4.sp
         )
 
-        Spacer(modifier = Modifier.height(36.dp))
+        Spacer(modifier = Modifier.height(28.dp))
 
         Card(
             colors = CardDefaults.cardColors(containerColor = Color(0xFF19162B)),
@@ -1585,26 +1147,21 @@ fun ProfileSetupScreen(viewModel: TicTacToeViewModel) {
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = "Player Profile Name",
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = Color.White
+                    text = if (isSignUpMode) "CREATE NEW ACCOUNT" else "SECURE MEMBERS SIGN IN",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
+                    letterSpacing = 1.sp
                 )
 
-                Text(
-                    text = "Set your nickname to join the online ranked matchmaking ladder.",
-                    fontSize = 12.sp,
-                    textAlign = TextAlign.Center,
-                    color = Color(0xFF8A84AC),
-                    modifier = Modifier.padding(vertical = 8.dp)
-                )
+                Spacer(modifier = Modifier.height(16.dp))
 
-                Spacer(modifier = Modifier.height(12.dp))
-
+                // Email Input
                 OutlinedTextField(
-                    value = textInput,
-                    onValueChange = { if (it.length <= 16) textInput = it },
-                    placeholder = { Text("E.g., SkyWalker_99", color = Color(0xFF5A547C)) },
+                    value = emailInput,
+                    onValueChange = { emailInput = it },
+                    label = { Text("Email Address", color = Color(0xFF8B8A9D)) },
+                    placeholder = { Text("E.g., user@gmail.com", color = Color(0xFF5A547C)) },
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = Color.White,
@@ -1614,28 +1171,79 @@ fun ProfileSetupScreen(viewModel: TicTacToeViewModel) {
                         focusedContainerColor = Color(0xFF110E1E),
                         unfocusedContainerColor = Color(0xFF110E1E)
                     ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("nickname_input"),
+                    modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp)
                 )
 
-                Spacer(modifier = Modifier.height(20.dp))
+                Spacer(modifier = Modifier.height(12.dp))
 
-                Button(
-                    onClick = { viewModel.submitNickname(textInput) },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF87)),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(50.dp)
-                        .testTag("submit_nickname_button")
-                ) {
+                // Password Input
+                OutlinedTextField(
+                    value = passwordInput,
+                    onValueChange = { passwordInput = it },
+                    label = { Text("Password", color = Color(0xFF8B8A9D)) },
+                    visualTransformation = PasswordVisualTransformation(),
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        focusedBorderColor = Color(0xFF00FF87),
+                        unfocusedBorderColor = Color(0xFF2C274E),
+                        focusedContainerColor = Color(0xFF110E1E),
+                        unfocusedContainerColor = Color(0xFF110E1E)
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp)
+                )
+
+                if (authError != null) {
+                    Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "REGISTER & ENTER ARENA",
-                        color = Color(0xFF040306),
+                        text = authError ?: "",
+                        color = Color(0xFFFF5252),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        textAlign = TextAlign.Center
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(18.dp))
+
+                if (isLoading) {
+                    CircularProgressIndicator(color = Color(0xFF00FF87))
+                } else {
+                    Button(
+                        onClick = {
+                            if (isSignUpMode) {
+                                viewModel.signUp(emailInput, passwordInput, context)
+                            } else {
+                                viewModel.login(emailInput, passwordInput, context)
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF87)),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                    ) {
+                        Text(
+                            text = if (isSignUpMode) "SIGN UP NOW" else "SIGN IN SECURELY",
+                            color = Color(0xFF040306),
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.sp
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Text(
+                        text = if (isSignUpMode) "Already have an account? Sign In" else "Don't have an account? Sign Up",
+                        color = Color(0xFF00FF87),
+                        fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
-                        letterSpacing = 1.sp
+                        modifier = Modifier
+                            .clickable { isSignUpMode = !isSignUpMode }
+                            .padding(8.dp)
                     )
                 }
             }
@@ -1643,591 +1251,727 @@ fun ProfileSetupScreen(viewModel: TicTacToeViewModel) {
     }
 }
 
-// --- 2. HOME DASHBOARD ---
-
+// --- SCREEN 2: HOME DASHBOARD (SIMPLIFIED) ---
 @Composable
 fun HomeDashboardScreen(viewModel: TicTacToeViewModel) {
-    val profile by viewModel.playerProfile.collectAsState()
-    val history by viewModel.matchHistory.collectAsState()
+    val points by viewModel.userPoints.collectAsState()
+    val email by viewModel.userEmail.collectAsState()
     val context = LocalContext.current
-
-    var showInsufficientFundsDetails by remember { mutableStateOf(false) }
-    var showAdPromptDetails by remember { mutableStateOf(false) }
-    var statusMessage by remember { mutableStateOf<String?>(null) }
-
-    if (showInsufficientFundsDetails) {
-        AlertDialog(
-            onDismissRequest = { showInsufficientFundsDetails = false },
-            containerColor = Color(0xFF161524),
-            titleContentColor = Color.White,
-            textContentColor = Color(0xFF8B8A9D),
-            title = {
-                Text(
-                    text = "⚠️ INSUFFICIENT BALANCE",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp,
-                    color = Color(0xFFFF5252)
-                )
-            },
-            text = {
-                Column {
-                    Text(
-                        text = "To join the Competitive Arena, you need at least ₹0.10 entry fee.",
-                        fontSize = 14.sp,
-                        color = Color.White
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text(
-                        text = "Don't worry! Watch a short sponsor ad video now to receive a FREE +₹0.50 Top-Up instantly and keep playing!",
-                        fontSize = 12.sp,
-                        color = Color(0xFF8B8A9D)
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val activity = context.findActivity()
-                        if (activity != null) {
-                            showInsufficientFundsDetails = false
-                            statusMessage = "Loading Sponsor Video..."
-                            viewModel.watchRewardedAdForTopUp(
-                                activity = activity,
-                                onSuccess = {
-                                    statusMessage = "Success! Received Free ₹0.50 Top-Up!"
-                                },
-                                onFailure = {
-                                    statusMessage = "Ad closed or failed. Try again!"
-                                }
-                            )
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF87)),
-                    shape = RoundedCornerShape(10.dp)
-                ) {
-                    Text(text = "WATCH FREE AD", color = Color(0xFF040306), fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showInsufficientFundsDetails = false }) {
-                    Text(text = "CANCEL", color = Color(0xFF8B8A9D))
-                }
-            }
-        )
-    }
-
-    if (showAdPromptDetails) {
-        AlertDialog(
-            onDismissRequest = { showAdPromptDetails = false },
-            containerColor = Color(0xFF161524),
-            titleContentColor = Color.White,
-            textContentColor = Color(0xFF8B8A9D),
-            title = {
-                Text(
-                    text = "⚔️ JOIN ARENA QUEUE",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp,
-                    color = Color(0xFF00FF87)
-                )
-            },
-            text = {
-                Column {
-                    Text(
-                        text = "To play a match and climb the leaderboard divisions, you must pay the entry fee and support our sponsors.",
-                        fontSize = 13.sp,
-                        color = Color(0xFF8B8A9D)
-                    )
-                    Spacer(modifier = Modifier.height(14.dp))
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(Color(0xFF0F0D1A), RoundedCornerShape(10.dp))
-                            .padding(12.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column {
-                            Text("ENTRY FEE", fontSize = 10.sp, color = Color(0xFF8B8A9D), fontWeight = FontWeight.Bold)
-                            Text("₹0.10", fontSize = 15.sp, color = Color(0xFFFF5252), fontWeight = FontWeight.Bold)
-                        }
-                        Column {
-                            Text("SPONSOR AD", fontSize = 10.sp, color = Color(0xFF8B8A9D), fontWeight = FontWeight.Bold)
-                            Text("1 Video Clip", fontSize = 15.sp, color = Color(0xFF7000FF), fontWeight = FontWeight.Bold)
-                        }
-                        Column {
-                            Text("WIN PAYOUT", fontSize = 10.sp, color = Color(0xFF8B8A9D), fontWeight = FontWeight.Bold)
-                            Text("+₹0.18", fontSize = 15.sp, color = Color(0xFF00FF87), fontWeight = FontWeight.Bold)
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text(
-                        text = "Loss of this match will forfeit the ₹0.10 entry fee. Draws refund your entry fee fully (₹0.10)!",
-                        fontSize = 11.sp,
-                        color = Color(0xFF8B8A9D)
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val activity = context.findActivity()
-                        if (activity != null) {
-                            showAdPromptDetails = false
-                            statusMessage = "Loading Sponsor Ad..."
-                            viewModel.checkAndStartMatch(
-                                activity = activity,
-                                onSuccess = {
-                                    statusMessage = "Paid ₹0.10 and authenticated! Finding match..."
-                                    viewModel.startMatchmaking()
-                                },
-                                onFail = { reason ->
-                                    if (reason == "INSUFFICIENT_FUNDS") {
-                                        showInsufficientFundsDetails = true
-                                    } else {
-                                        statusMessage = "You must watch the ad completely to enter."
-                                    }
-                                }
-                            )
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7000FF)),
-                    shape = RoundedCornerShape(10.dp)
-                ) {
-                    Text(text = "PAY & WATCH AD", color = Color.White, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showAdPromptDetails = false }) {
-                    Text(text = "CANCEL", color = Color(0xFF8B8A9D))
-                }
-            }
-        )
-    }
-
-    if (statusMessage != null) {
-        LaunchedEffect(statusMessage) {
-            delay(3500)
-            statusMessage = null
-        }
-        AlertDialog(
-            onDismissRequest = { statusMessage = null },
-            containerColor = Color(0xFF161524),
-            title = { Text("Arena Alert", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold) },
-            text = { Text(statusMessage ?: "", color = Color.White, fontSize = 14.sp) },
-            confirmButton = {
-                TextButton(onClick = { statusMessage = null }) {
-                    Text("OK", color = Color(0xFF00FF87))
-                }
-            }
-        )
-    }
+    val activity = context.findActivity()
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF0E0D16))
+            .background(Color(0xFF0C0A12))
             .windowInsetsPadding(WindowInsets.safeDrawing)
-            .padding(horizontal = 20.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // Upper Title Header
-        Spacer(modifier = Modifier.height(16.dp))
+        // Top HUD Bar showing email and current Points
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFF141221))
+                .padding(horizontal = 20.dp, vertical = 14.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "Welcome Back,",
-                    fontSize = 14.sp,
-                    color = Color(0xFF8B8A9D)
-                )
-                Text(
-                    text = profile?.username ?: "Loading...",
-                    fontSize = 22.sp,
+                    text = email ?: "Player Session",
+                    fontSize = 11.sp,
+                    color = Color(0xFF8B8A9D),
                     fontWeight = FontWeight.Bold,
-                    color = Color.White,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-            }
-
-            // Wallet balance display pill
-            val balance = profile?.walletBalance ?: 10.00
-            Box(
-                modifier = Modifier
-                    .background(Color(0xFF161524), RoundedCornerShape(20.dp))
-                    .border(1.5.dp, Color(0xFF00FF87), RoundedCornerShape(20.dp))
-                    .clickable {
-                        val activity = context.findActivity()
-                        if (activity != null) {
-                            statusMessage = "Loading Top-Up Video..."
-                            viewModel.watchRewardedAdForTopUp(
-                                activity = activity,
-                                onSuccess = {
-                                    statusMessage = "Success! Received Free ₹0.50 Top-Up!"
-                                },
-                                onFailure = {
-                                    statusMessage = "Top-Up Ad closed or failed."
-                                }
-                            )
-                        }
-                    }
-                    .padding(horizontal = 14.dp, vertical = 8.dp)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = "₹",
-                        fontWeight = FontWeight.Black,
-                        fontSize = 15.sp,
-                        color = Color(0xFF00FF87)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = String.format(Locale.US, "%.2f", balance),
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp,
-                        color = Color.White
-                    )
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(20.dp))
-
-        // Professional Rating Card
-        val rankInfo = getRankBadgeInfo(profile?.rankPoints ?: 1200)
-        Card(
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF161524)),
-            shape = RoundedCornerShape(24.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .border(2.dp, Brush.radialGradient(listOf(rankInfo.second, Color(0xFF23213E))), RoundedCornerShape(24.dp))
-                .shadow(12.dp, RoundedCornerShape(24.dp)),
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(24.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text(
-                            text = "LADDER RANK",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = rankInfo.second,
-                            letterSpacing = 1.5.sp
-                        )
-                        Text(
-                            text = rankInfo.first,
-                            fontSize = 22.sp,
-                            fontWeight = FontWeight.Black,
-                            color = Color.White
-                        )
-                    }
-
-                    Box(
-                        modifier = Modifier
-                            .background(Color(0xFF23213C), RoundedCornerShape(12.dp))
-                            .padding(horizontal = 12.dp, vertical = 6.dp)
-                    ) {
-                        Text(
-                            text = "${profile?.rankPoints ?: 1200} LP",
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Stats row
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(text = "Wins", fontSize = 11.sp, color = Color(0xFF8B8A9D))
-                        Text(text = "${profile?.wins ?: 0}", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00FF87))
-                    }
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(text = "Draws", fontSize = 11.sp, color = Color(0xFF8B8A9D))
-                        Text(text = "${profile?.draws ?: 0}", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color(0xFF8B8A9D))
-                    }
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(text = "Losses", fontSize = 11.sp, color = Color(0xFF8B8A9D))
-                        Text(text = "${profile?.losses ?: 0}", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color(0xFFFF5252))
-                    }
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        val total = (profile?.wins ?: 0) + (profile?.losses ?: 0) + (profile?.draws ?: 0)
-                        val rate = if (total == 0) "0%" else "${((profile?.wins ?: 0) * 100) / total}%"
-                        Text(text = "Win Rate", fontSize = 11.sp, color = Color(0xFF8B8A9D))
-                        Text(text = rate, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color(0xFFFFD700))
-                    }
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(24.dp))
-
-        // Play Button
-        Button(
-            onClick = {
-                val currentBal = profile?.walletBalance ?: 10.00
-                if (currentBal < 0.10) {
-                    showInsufficientFundsDetails = true
-                } else {
-                    showAdPromptDetails = true
-                }
-            },
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7000FF)),
-            shape = RoundedCornerShape(16.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(56.dp)
-                .shadow(12.dp, RoundedCornerShape(16.dp))
-                .testTag("play_button")
-        ) {
-            Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.White)
-            Spacer(modifier = Modifier.width(10.dp))
-            Text(
-                text = "FIND COMPETITIVE MATCH",
-                color = Color.White,
-                fontWeight = FontWeight.Bold,
-                fontSize = 16.sp,
-                letterSpacing = 1.sp
-            )
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // --- REWARDED AD AND INTERSTITIAL AD SECTION ---
-        Card(
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF141322)),
-            shape = RoundedCornerShape(16.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .border(1.dp, Color(0xFF1F1E33), RoundedCornerShape(16.dp)),
-        ) {
-            val context = LocalContext.current
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "💎 PREMIUM LADDER REWARD",
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF7000FF),
-                        letterSpacing = 1.sp
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "Claim +25 LP Points Boost",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = "Watch a fast sponsor video clip.",
-                        fontSize = 11.sp,
-                        color = Color(0xFF8B8A9D)
-                    )
-                }
-
-                Button(
-                    onClick = {
-                        val activity = context.findActivity()
-                        if (activity != null) {
-                            AdManager.showRewarded(
-                                activity = activity,
-                                onRewardEarned = { amount ->
-                                    viewModel.grantRewardPoints(25)
-                                },
-                                onDismiss = {
-                                    AdManager.loadRewarded(activity)
-                                }
-                            )
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF87)),
-                    shape = RoundedCornerShape(10.dp),
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Star,
-                        contentDescription = null,
-                        tint = Color(0xFF0E0D16),
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "CLAIM",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp,
-                        color = Color(0xFF0E0D16)
-                    )
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(20.dp))
-
-        // Match History list
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "RECENT MATCHES",
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color(0xFF8B8A9D),
-                letterSpacing = 1.sp
-            )
-
-            if (history.isNotEmpty()) {
                 Text(
-                    text = "Clear Logs",
-                    fontSize = 12.sp,
-                    color = Color(0xFFFF5252),
-                    modifier = Modifier.clickable { viewModel.clearLogHistory() }
+                    text = "STATUS: ONLINE",
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF00FF87)
+                )
+            }
+
+            // Beautiful Top Bar Points Display
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(30.dp))
+                    .background(Color(0xFF1E1A33))
+                    .border(1.dp, Color(0xFF00FF87).copy(alpha = 0.4f), RoundedCornerShape(30.dp))
+                    .padding(horizontal = 14.dp, vertical = 6.dp)
+            ) {
+                Text(text = "⭐", fontSize = 14.sp)
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "$points PTS",
+                    color = Color.White,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 13.sp
                 )
             }
         }
 
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-        if (history.isEmpty()) {
-            Box(
+        // Large Play versus AI option card
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(horizontal = 20.dp)
+        ) {
+            // Welcome Card showing value conversion
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF16132D)),
+                shape = RoundedCornerShape(16.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f)
-                    .background(Color(0xFF141322), RoundedCornerShape(16.dp)),
-                contentAlignment = Alignment.Center
+                    .padding(vertical = 10.dp)
+                    .border(1.dp, Color(0xFF2C2652), RoundedCornerShape(16.dp))
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(text = "📭", fontSize = 38.sp)
-                    Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(text = "🎁", fontSize = 28.sp)
+                    Spacer(modifier = Modifier.width(14.dp))
+                    Column {
+                        Text(
+                            text = "1000 Points = ₹10 Redeem Code",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
+                        Text(
+                            text = "Win: +300 PTS | Loss: -50 PTS. Win matches and claim Google Play recharge instantly!",
+                            fontSize = 11.sp,
+                            color = Color(0xFF8B8A9D)
+                        )
+                    }
+                }
+            }
+
+            // Large Play Button Card
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF1C1340)),
+                shape = RoundedCornerShape(20.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 10.dp)
+                    .clickable {
+                        if (activity != null) {
+                            viewModel.startPlayMatchFlow(activity)
+                        }
+                    }
+                    .border(2.dp, Color(0xFF00FF87).copy(alpha = 0.3f), RoundedCornerShape(20.dp)),
+            ) {
+                Column(
+                    modifier = Modifier
+                        .padding(24.dp)
+                        .fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(72.dp)
+                            .background(Color(0xFF00FF87).copy(alpha = 0.1f), CircleShape)
+                            .border(1.5.dp, Color(0xFF00FF87), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(text = "🛡️", fontSize = 32.sp)
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
                     Text(
-                        text = "No games played on this ladder yet.",
-                        color = Color(0xFF5E5C70),
-                        fontSize = 13.sp,
+                        text = "PLAY CHALLENGE MATCH",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Black,
+                        color = Color.White
+                    )
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    Text(
+                        text = "Requires watching a Google Play sponsor ad. Safe, instant connection.",
+                        fontSize = 12.sp,
+                        color = Color(0xFFBDC2E8),
                         textAlign = TextAlign.Center
                     )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Button(
+                        onClick = {
+                            if (activity != null) {
+                                viewModel.startPlayMatchFlow(activity)
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF87)),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text(text = "START VS AI arena", color = Color(0xFF09080E), fontWeight = FontWeight.Bold)
+                    }
                 }
+            }
+
+            // Earn Free Points card option
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF110E20)),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 6.dp)
+                    .clickable {
+                        if (activity != null) {
+                            viewModel.watchRewardedAdForPoints(activity)
+                        }
+                    }
+                    .border(1.dp, Color(0xFF241F3C), RoundedCornerShape(16.dp))
+            ) {
+                Row(
+                    modifier = Modifier.padding(16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(text = "💎", fontSize = 20.sp)
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text("FREE +150 POINTS", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text("Support us and claim bonus points", color = Color(0xFF8B8A9D), fontSize = 11.sp)
+                        }
+                    }
+                    Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null, tint = Color(0xFF00FF87))
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Action Card: REDEEM POINTS
+            Button(
+                onClick = {
+                    viewModel.loadRedeemHistory()
+                    viewModel.refreshUserProfile()
+                    viewModel.setScreen(ScreenState.REDEEM)
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7000FF)),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(54.dp)
+            ) {
+                Icon(imageVector = Icons.Default.ShoppingCart, contentDescription = null, tint = Color.White)
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(text = "REDEEM PLAY STORE GIFT CODES", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            }
+
+            // Admin Link Option visible only for admin email
+            if (email == "vfttffx57@gmail.com") {
+                Spacer(modifier = Modifier.height(12.dp))
+                Button(
+                    onClick = {
+                        viewModel.loadAdminData()
+                        viewModel.setScreen(ScreenState.ADMIN)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5252)),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp)
+                ) {
+                    Icon(imageVector = Icons.Default.Settings, contentDescription = null, tint = Color.White)
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(text = "ENTER ADMIN DASHBOARD", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                }
+            }
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            AdmobBanner(modifier = Modifier.padding(vertical = 4.dp))
+            Spacer(modifier = Modifier.height(10.dp))
+            Text(
+                text = "SIGN OUT SECTION",
+                color = Color(0xFFFF5252),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier
+                    .clickable { viewModel.logout(context) }
+                    .padding(8.dp)
+            )
+        }
+    }
+}
+
+// --- SCREEN 3: REDEEM POINTS AND REDEEM HISTORY ---
+@Composable
+fun RedeemScreen(viewModel: TicTacToeViewModel) {
+    val points by viewModel.userPoints.collectAsState()
+    val history by viewModel.redeemHistory.collectAsState()
+    val context = LocalContext.current
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF0C0A12))
+            .windowInsetsPadding(WindowInsets.safeDrawing)
+    ) {
+        // Top Toolbar
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFF141221))
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = { viewModel.setScreen(ScreenState.HOME) }) {
+                Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Text(
+                text = "REDEEM REWARDS",
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Black,
+                color = Color.White
+            )
+        }
+
+        LazyColumn(
+            modifier = Modifier
+                .weight(1f)
+                .padding(horizontal = 20.dp)
+        ) {
+            item {
+                Spacer(modifier = Modifier.height(16.dp))
+                
+                // Current points display panel
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1B1638)),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, Color(0xFF332A6B), RoundedCornerShape(16.dp))
+                ) {
+                    Column(
+                        modifier = Modifier.padding(20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(text = "CURRENT REDEEMABLE BALANCE", color = Color(0xFFBDC2E8), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Text(text = "⭐ $points PTS", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Black)
+                        Text(text = "Value: ₹${(points / 100.0).format(2)} INR", color = Color(0xFF00FF87), fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                Text(
+                    text = "AVAILABLE VOUCHERS",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // ₹10 Redeem option Card
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF161524)),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, Color(0xFF28263D), RoundedCornerShape(16.dp))
+                ) {
+                    Column(modifier = Modifier.padding(18.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(text = "🎮", fontSize = 24.sp)
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text("₹10 Play Store Card", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                    Text("Costs: 1000 Points", color = Color(0xFF8B8A9D), fontSize = 11.sp)
+                                }
+                            }
+                            
+                            Button(
+                                onClick = { viewModel.claimRedeemRequest(context) },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF87)),
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                            ) {
+                                Text("CLAIM", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(28.dp))
+
+                Text(
+                    text = "REDEEM HISTORY LOGS",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+            }
+
+            if (history.isEmpty()) {
+                item {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(140.dp)
+                            .background(Color(0xFF141322), RoundedCornerShape(16.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("No redemptions submitted yet.", color = Color(0xFF5E5C70), fontSize = 12.sp)
+                    }
+                }
+            } else {
+                items(history) { req ->
+                    RedeemHistoryRow(req)
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+            }
+        }
+        
+        AdmobBanner(modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp))
+    }
+}
+
+// Float output formatter safely
+fun Double.format(digits: Int) = java.lang.String.format("%.${digits}f", this)
+
+@Composable
+fun RedeemHistoryRow(req: RedeemRequest) {
+    val isPending = req.status == "PENDING"
+    val context = LocalContext.current
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF141322)),
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, Color(0xFF211F36), RoundedCornerShape(12.dp))
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "₹${req.amount} Play Store Code",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp
+                    )
+                    val dateFormatted = remember(req.timestamp) {
+                        try {
+                            SimpleDateFormat("dd MMM, yyyy h:mm a", Locale.getDefault()).format(Date(req.timestamp))
+                        } catch (e: Exception) {
+                            "Just now"
+                        }
+                    }
+                    Text(text = dateFormatted, color = Color(0xFF5C5A75), fontSize = 11.sp)
+                }
+
+                // Status Pill
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(30.dp))
+                        .background(
+                            if (isPending) Color(0xFFFF9800).copy(alpha = 0.12f) else Color(0xFF00FF87).copy(alpha = 0.12f)
+                        )
+                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                ) {
+                    Text(
+                        text = if (isPending) "PENDING" else "COMPLETED",
+                        color = if (isPending) Color(0xFFFF9800) else Color(0xFF00FF87),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 10.sp
+                    )
+                }
+            }
+
+            if (!isPending && req.redeemCode.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFF0F0E1B), RoundedCornerShape(8.dp))
+                        .padding(10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = req.redeemCode,
+                        color = Color(0xFF00FF87),
+                        fontWeight = FontWeight.Black,
+                        fontSize = 12.sp,
+                        letterSpacing = 0.5.sp
+                    )
+                    
+                    Text(
+                        text = "COPY",
+                        color = Color.White,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        modifier = Modifier
+                            .clickable {
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                val clip = android.content.ClipData.newPlainText("Redeem Code", req.redeemCode)
+                                clipboard.setPrimaryClip(clip)
+                                Toast.makeText(context, "Redeem card copied to clipboard!", Toast.LENGTH_SHORT).show()
+                            }
+                            .padding(4.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+// --- SCREEN 4: ADMIN PANEL DASHBOARD ---
+@Composable
+fun AdminPanelScreen(viewModel: TicTacToeViewModel) {
+    val reqs by viewModel.allRedeemRequests.collectAsState()
+    val matches by viewModel.allMatchHistory.collectAsState()
+    val isLoading by viewModel.isAdminLoading.collectAsState()
+    val context = LocalContext.current
+
+    var selectedTab by remember { mutableStateOf(0) } // 0: Pending, 1: Winnings History
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF0C0A12))
+            .windowInsetsPadding(WindowInsets.safeDrawing)
+    ) {
+        // Toolbar
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFF141221))
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = { viewModel.setScreen(ScreenState.HOME) }) {
+                Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Text(
+                text = "ADMIN PANEL",
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Black,
+                color = Color.White
+            )
+            Spacer(modifier = Modifier.weight(1f))
+            IconButton(onClick = { viewModel.loadAdminData() }) {
+                Icon(imageVector = Icons.Default.Refresh, contentDescription = "Refresh", tint = Color(0xFF00FF87))
+            }
+        }
+
+        // Segment Tabs
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFF18152D))
+        ) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clickable { selectedTab = 0 }
+                    .background(if (selectedTab == 0) Color(0xFF282449) else Color.Transparent)
+                    .padding(vertical = 12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "WITHDRAWALS",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                    color = if (selectedTab == 0) Color(0xFF00FF87) else Color.White
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clickable { selectedTab = 1 }
+                    .background(if (selectedTab == 1) Color(0xFF282449) else Color.Transparent)
+                    .padding(vertical = 12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "WINNINGS LOGS",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                    color = if (selectedTab == 1) Color(0xFF00FF87) else Color.White
+                )
+            }
+        }
+
+        if (isLoading) {
+            Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(color = Color(0xFF00FF87))
             }
         } else {
             LazyColumn(
                 modifier = Modifier
-                    .fillMaxWidth()
                     .weight(1f)
-                    .clip(RoundedCornerShape(16.dp)),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                    .padding(16.dp)
             ) {
-                items(history) { record ->
-                    MatchHistoryRow(record)
+                if (selectedTab == 0) {
+                    val listPending = reqs.filter { it.status == "PENDING" }
+                    if (listPending.isEmpty()) {
+                        item {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(180.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("No pending withdrawals requested.", color = Color(0xFF6E6B8D), fontSize = 13.sp)
+                            }
+                        }
+                    } else {
+                        items(listPending) { reqObj ->
+                            AdminRequestItem(reqObj) { codeValue ->
+                                viewModel.approveWithdrawRequest(reqObj.requestId, codeValue, context)
+                            }
+                            Spacer(modifier = Modifier.height(10.dp))
+                        }
+                    }
+                } else {
+                    val logs = matches
+                    if (logs.isEmpty()) {
+                        item {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(180.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("No match winning logs registered.", color = Color(0xFF6E6B8D), fontSize = 13.sp)
+                            }
+                        }
+                    } else {
+                        items(logs) { itemMatch ->
+                            AdminMatchRecordRow(itemMatch)
+                            Spacer(modifier = Modifier.height(8.dp))
+                        }
+                    }
                 }
             }
         }
-        Spacer(modifier = Modifier.height(12.dp))
-        AdmobBanner(modifier = Modifier.padding(vertical = 4.dp))
-        Spacer(modifier = Modifier.height(12.dp))
     }
 }
 
 @Composable
-fun MatchHistoryRow(record: MatchRecord) {
-    val isWin = record.result == "WIN"
-    val isDraw = record.result == "DRAW"
+fun AdminRequestItem(req: RedeemRequest, onSubmitCode: (String) -> Unit) {
+    var codeText by remember { mutableStateOf("") }
 
-    Row(
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF161524)),
+        shape = RoundedCornerShape(12.dp),
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color(0xFF141322), RoundedCornerShape(14.dp))
-            .border(1.dp, Color(0xFF1F1E33), RoundedCornerShape(14.dp))
-            .padding(14.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+            .border(1.dp, Color(0xFF2B2846), RoundedCornerShape(12.dp))
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            // Circle with Win / Loss symbol
-            Box(
-                modifier = Modifier
-                    .size(36.dp)
-                    .background(
-                        if (isWin) Color(0xFF00FF87).copy(alpha = 0.15f)
-                        else if (isDraw) Color(0xFF8B8A9D).copy(alpha = 0.15f)
-                        else Color(0xFFFF5252).copy(alpha = 0.15f),
-                        CircleShape
-                    ),
-                contentAlignment = Alignment.Center
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(text = "USER: ${req.email}", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 12.sp)
+            Spacer(modifier = Modifier.height(4.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text(
-                    text = if (isWin) "W" else if (isDraw) "D" else "L",
-                    fontWeight = FontWeight.Black,
-                    fontSize = 14.sp,
-                    color = if (isWin) Color(0xFF00FF87) else if (isDraw) Color(0xFF8B8A9D) else Color(0xFFFF5252)
-                )
+                Text(text = "Points claim: ${req.pointsRedeemed} PTS", fontSize = 12.sp, color = Color(0xFF8B8A9D))
+                Text(text = "Amount: ₹${req.amount}", fontSize = 12.sp, color = Color(0xFF00FF87), fontWeight = FontWeight.ExtraBold)
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+
+            OutlinedTextField(
+                value = codeText,
+                onValueChange = { codeText = it },
+                label = { Text("Paste Play Store Redeem Code here", color = Color(0xFF8B8A9D), fontSize = 11.sp) },
+                singleLine = true,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = Color.White,
+                    unfocusedTextColor = Color.White,
+                    focusedBorderColor = Color(0xFF00FF87),
+                    unfocusedBorderColor = Color(0xFF2C274E),
+                    focusedContainerColor = Color(0xFF0B0A11),
+                    unfocusedContainerColor = Color(0xFF0B0A11)
+                ),
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(10.dp)
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Button(
+                onClick = { onSubmitCode(codeText) },
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF87)),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.align(Alignment.End)
+            ) {
+                Text("SUBMIT CODEPASS", color = Color.Black, fontWeight = FontWeight.Black, fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+@Composable
+fun AdminMatchRecordRow(record: MatchRecordFirebase) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF141322)),
+        shape = RoundedCornerShape(10.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text(text = record.email, fontWeight = FontWeight.Bold, color = Color.White, fontSize = 12.sp)
+                val dateStr = remember(record.timestamp) {
+                    SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault()).format(Date(record.timestamp))
+                }
+                Text(text = dateStr, color = Color(0xFF5C5A75), fontSize = 11.sp)
             }
 
-            Spacer(modifier = Modifier.width(12.dp))
-
-            Column {
+            Column(horizontalAlignment = Alignment.End) {
                 Text(
-                    text = record.opponentName,
-                    color = Color.White,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 14.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    text = record.outcome,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 12.sp,
+                    color = if (record.outcome == "WIN") Color(0xFF00FF87) else Color(0xFFFF5252)
                 )
                 Text(
-                    text = "Opponent: ${record.opponentRank}",
-                    color = Color(0xFF5C5A75),
+                    text = if (record.pointsChange > 0) "+${record.pointsChange} PTS" else "${record.pointsChange} PTS",
+                    color = if (record.pointsChange > 0) Color(0xFF00FF87) else Color(0xFFFF5252),
                     fontSize = 11.sp
                 )
             }
         }
-
-        Column(horizontalAlignment = Alignment.End) {
-            Text(
-                text = if (record.lpChange >= 0) "+${record.lpChange} LP" else "${record.lpChange} LP",
-                color = if (record.lpChange >= 0) Color(0xFF00FF87) else Color(0xFFFF5252),
-                fontWeight = FontWeight.Bold,
-                fontSize = 13.sp
-            )
-            val dateStr = remember(record.timestamp) {
-                SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date(record.timestamp))
-            }
-            Text(
-                text = dateStr,
-                color = Color(0xFF5C5A75),
-                fontSize = 10.sp
-            )
-        }
     }
 }
 
-// --- 3. MATCHMAKING SCREEN ---
-
+// --- SCREEN 5: COUNTER RADAR QUEUE ---
 @Composable
 fun MatchmakingScreen(viewModel: TicTacToeViewModel) {
     val duration by viewModel.matchmakingTimeSec.collectAsState()
 
-    // Infinite orbit scale animation
     val infiniteTransition = rememberInfiniteTransition(label = "RadarSweep")
     val sweepRotation by infiniteTransition.animateFloat(
         initialValue = 0f,
@@ -2237,16 +1981,6 @@ fun MatchmakingScreen(viewModel: TicTacToeViewModel) {
             repeatMode = RepeatMode.Restart
         ),
         label = "rotation"
-    )
-
-    val scaleAmt by infiniteTransition.animateFloat(
-        initialValue = 0.95f,
-        targetValue = 1.05f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1100, easing = EaseInOutSine),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "scale"
     )
 
     Column(
@@ -2259,104 +1993,78 @@ fun MatchmakingScreen(viewModel: TicTacToeViewModel) {
         verticalArrangement = Arrangement.Center
     ) {
         Text(
-            text = "SEARCHING OPPONENT",
-            fontSize = 16.sp,
+            text = "MATCH QUEUE ENEMY DETECT",
+            fontSize = 15.sp,
             fontWeight = FontWeight.ExtraBold,
             color = Color(0xFF7000FF),
-            letterSpacing = 3.sp
-        )
-
-        Text(
-            text = "LADDER MATCH",
-            fontSize = 11.sp,
-            color = Color(0xFF5E5C75),
             letterSpacing = 2.sp
         )
 
-        Spacer(modifier = Modifier.height(44.dp))
+        Spacer(modifier = Modifier.height(40.dp))
 
-        // Radar Design
         Box(
             modifier = Modifier
-                .size(200.dp)
-                .scale(scaleAmt)
+                .size(180.dp)
                 .border(1.5.dp, Color(0xFF1E1A2E), CircleShape),
             contentAlignment = Alignment.Center
         ) {
-            // Layer 1
             Box(
                 modifier = Modifier
-                    .size(140.dp)
+                    .size(130.dp)
                     .border(1.dp, Color(0xFF2C2646), CircleShape)
             )
 
-            // Dynamic Sweeper Arc rotating
             Box(
                 modifier = Modifier
-                    .size(175.dp)
+                    .size(160.dp)
                     .rotate(sweepRotation),
                 contentAlignment = Alignment.TopCenter
             ) {
                 Box(
                     modifier = Modifier
-                        .size(12.dp)
+                        .size(10.dp)
                         .background(Color(0xFF7000FF), CircleShape)
                 )
             }
 
-            // Central icon
             Box(
                 modifier = Modifier
-                    .size(64.dp)
+                    .size(60.dp)
                     .background(Color(0xFF1A152B), CircleShape)
                     .border(1.5.dp, Color(0xFF7000FF), CircleShape),
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = "⚡",
-                    fontSize = 24.sp
-                )
+                Text(text = "⚔️", fontSize = 22.sp)
             }
         }
 
-        Spacer(modifier = Modifier.height(44.dp))
+        Spacer(modifier = Modifier.height(30.dp))
 
         Text(
-            text = "Elapse Time: ${duration}s",
+            text = "Seconds Elapsed: ${duration}s",
             color = Color.White,
             fontWeight = FontWeight.Medium,
             fontSize = 14.sp
         )
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(6.dp))
 
         Text(
-            text = "Analyzing lobby pool for stable connection...",
+            text = "Awaiting available AI lobby connection...",
             color = Color(0xFF8B8A9D),
             fontSize = 12.sp,
             textAlign = TextAlign.Center
         )
-
-        Spacer(modifier = Modifier.height(30.dp))
-
-        LinearProgressIndicator(
-            color = Color(0xFF7000FF),
-            trackColor = Color(0xFF1B182B),
-            modifier = Modifier
-                .width(160.dp)
-                .clip(CircleShape)
-        )
     }
 }
 
-// --- 4. MATCH FOUND TRANSITION SCREEN ---
-
+// --- SCREEN 6: VERSUS CARDS DISPLAY ---
 @Composable
 fun MatchFoundCards(viewModel: TicTacToeViewModel) {
-    val playerProfile by viewModel.playerProfile.collectAsState()
+    val email by viewModel.userEmail.collectAsState()
     val opponent by viewModel.opponent.collectAsState()
+    val points by viewModel.userPoints.collectAsState()
 
-    // Slide reveals
     var displayed by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         delay(100)
@@ -2373,29 +2081,21 @@ fun MatchFoundCards(viewModel: TicTacToeViewModel) {
         verticalArrangement = Arrangement.Center
     ) {
         Text(
-            text = "MATCH FOUND!",
-            fontSize = 28.sp,
+            text = "SERVER CONNECTED!",
+            fontSize = 24.sp,
             fontWeight = FontWeight.Black,
             color = Color(0xFF00FF87),
             letterSpacing = 2.sp
         )
 
-        Text(
-            text = "SECURE SERVER CONNECTED",
-            fontSize = 11.sp,
-            color = Color(0xFF5E5C75),
-            letterSpacing = 1.5.sp
-        )
+        Spacer(modifier = Modifier.height(44.dp))
 
-        Spacer(modifier = Modifier.height(50.dp))
-
-        // VS Card Row
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Player Card
+            // Player side
             AnimatedVisibility(
                 visible = displayed,
                 enter = slideInHorizontally(animationSpec = tween(500)) { -it } + fadeIn()
@@ -2403,48 +2103,42 @@ fun MatchFoundCards(viewModel: TicTacToeViewModel) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Box(
                         modifier = Modifier
-                            .size(76.dp)
+                            .size(70.dp)
                             .background(Brush.linearGradient(listOf(Color(0xFF7000FF), Color(0xFF4A00E0))), CircleShape)
                             .border(2.dp, Color.White, CircleShape),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(text = "👤", fontSize = 32.sp)
+                        Text(text = "👤", fontSize = 28.sp)
                     }
                     Spacer(modifier = Modifier.height(10.dp))
                     Text(
-                        text = playerProfile?.username ?: "You",
+                        text = email?.split("@")?.get(0) ?: "You",
                         color = Color.White,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp,
-                        modifier = Modifier.widthIn(max = 100.dp),
+                        fontSize = 13.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = "Rating: ${playerProfile?.rankPoints} LP",
+                        text = "$points PTS",
                         color = Color(0xFF8B8A9D),
                         fontSize = 11.sp
                     )
                 }
             }
 
-            // VS Logo
+            // VS Circle
             Box(
                 modifier = Modifier
-                    .size(46.dp)
+                    .size(40.dp)
                     .background(Color(0xFFFF5252), CircleShape)
                     .border(2.dp, Color.White, CircleShape),
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = "VS",
-                    fontWeight = FontWeight.Black,
-                    fontSize = 14.sp,
-                    color = Color.White
-                )
+                Text(text = "VS", fontWeight = FontWeight.Black, fontSize = 12.sp, color = Color.White)
             }
 
-            // Opponent Card
+            // Masked Opponent
             AnimatedVisibility(
                 visible = displayed,
                 enter = slideInHorizontally(animationSpec = tween(500)) { it } + fadeIn()
@@ -2452,20 +2146,20 @@ fun MatchFoundCards(viewModel: TicTacToeViewModel) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Box(
                         modifier = Modifier
-                            .size(76.dp)
+                            .size(70.dp)
                             .background(opponent.avatarBg, CircleShape)
                             .border(2.dp, Color.White, CircleShape),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(text = opponent.avatarEmoji, fontSize = 32.sp)
+                        Text(text = opponent.avatarEmoji, fontSize = 28.sp)
                     }
                     Spacer(modifier = Modifier.height(10.dp))
+                    // Mask opponent name with stars! (Satisfies requirements)
                     Text(
-                        text = opponent.name,
+                        text = maskOpponentName(opponent.name),
                         color = Color.White,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp,
-                        modifier = Modifier.widthIn(max = 120.dp),
+                        fontSize = 13.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -2478,12 +2172,11 @@ fun MatchFoundCards(viewModel: TicTacToeViewModel) {
             }
         }
 
-        Spacer(modifier = Modifier.height(40.dp))
+        Spacer(modifier = Modifier.height(36.dp))
 
         Text(
-            text = opponent.tagline,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Medium,
+            text = "Match started dynamically. Winning grants +300 PTS. Play perfectly!",
+            fontSize = 12.sp,
             color = Color(0xFFFFD700),
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(horizontal = 24.dp)
@@ -2491,27 +2184,16 @@ fun MatchFoundCards(viewModel: TicTacToeViewModel) {
     }
 }
 
-// --- 5. COMPREHENSIVE LOBBY GAMEPLAY ---
-
+// --- SCREEN 7: GAMEPLAY ARENA (NO CHAT) ---
 @Composable
 fun GameplayScreen(viewModel: TicTacToeViewModel) {
-    val playerProfile by viewModel.playerProfile.collectAsState()
+    val email by viewModel.userEmail.collectAsState()
     val opponent by viewModel.opponent.collectAsState()
     val board by viewModel.board.collectAsState()
     val isTurn by viewModel.isPlayerTurn.collectAsState()
     val activeTime by viewModel.turnTimer.collectAsState()
     val isThinking by viewModel.isOpponentThinking.collectAsState()
     val ping by viewModel.pingMs.collectAsState()
-    val chats by viewModel.chatMessages.collectAsState()
-
-    val chatListState = rememberLazyListState()
-
-    // Auto scroll chat to bottom when message arrives
-    LaunchedEffect(chats.size) {
-        if (chats.isNotEmpty()) {
-            chatListState.animateScrollToItem(chats.size - 1)
-        }
-    }
 
     Column(
         modifier = Modifier
@@ -2520,7 +2202,7 @@ fun GameplayScreen(viewModel: TicTacToeViewModel) {
             .windowInsetsPadding(WindowInsets.safeDrawing),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // High connection status bar
+        // Ping bar
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -2530,244 +2212,153 @@ fun GameplayScreen(viewModel: TicTacToeViewModel) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(6.dp)
-                        .background(Color(0xFF00FF87), CircleShape)
-                )
+                Box(modifier = Modifier.size(6.dp).background(Color(0xFF00FF87), CircleShape))
                 Spacer(modifier = Modifier.width(6.dp))
+                // Mask the opponent's name so user feels opponent is real but hidden
                 Text(
-                    text = "Rank Match Lobby",
+                    text = "Playing: ${maskOpponentName(opponent.name)}",
                     fontSize = 11.sp,
-                    color = Color(0xFF8E8BB1)
+                    color = Color(0xFF8E8BB1),
+                    fontWeight = FontWeight.Bold
                 )
             }
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = "Server ping: ${ping}ms",
-                    fontSize = 11.sp,
-                    color = if (ping < 50) Color(0xFF00FF87) else Color(0xFFFFD700)
-                )
-            }
+            Text(
+                text = "Ping: ${ping}ms",
+                fontSize = 11.sp,
+                color = if (ping < 50) Color(0xFF00FF87) else Color(0xFFFFD700)
+            )
         }
 
-        // Active Player info & timing indicators
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // Players Heads HUD
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 14.dp),
+                .padding(horizontal = 20.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Player Details Left
+            // Player Left
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .weight(1f)
-                    .opacityIf(!isTurn && !isThinking)
+                modifier = Modifier.weight(1f).graphicsLayer(alpha = if (isTurn) 1f else 0.45f)
             ) {
                 Box(
-                    modifier = Modifier
-                        .size(38.dp)
-                        .background(Color(0xFF7000FF), CircleShape),
+                    modifier = Modifier.size(36.dp).background(Color(0xFF7000FF), CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text("👤", fontSize = 18.sp)
+                    Text("👤", fontSize = 16.sp)
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 Column {
                     Text(
-                        text = playerProfile?.username ?: "You",
+                        text = email?.split("@")?.get(0) ?: "Player",
                         color = Color.White,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp,
+                        fontSize = 12.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Text(
-                        text = "Sign: X",
-                        color = Color(0xFF00FF87),
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 11.sp
-                    )
+                    Text("X SIGN", color = Color(0xFF00FF87), fontWeight = FontWeight.Bold, fontSize = 10.sp)
                 }
             }
 
-            // VS & countdown block
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.padding(horizontal = 8.dp)
-            ) {
+            // Intermediary timer
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Box(
                     modifier = Modifier
                         .background(
-                            if (isTurn) Color(0xFF00FF87).copy(alpha = 0.15f) else Color(0xFFFF5252).copy(alpha = 0.15f),
+                            if (isMyTurn(isTurn, isThinking)) Color(0xFF00FF87).copy(alpha = 0.12f) else Color(0xFFFF5252).copy(alpha = 0.12f),
                             RoundedCornerShape(8.dp)
                         )
-                        .border(1.dp, if (isTurn) Color(0xFF00FF87) else Color(0xFFFF5252), RoundedCornerShape(8.dp))
+                        .border(1.dp, if (isMyTurn(isTurn, isThinking)) Color(0xFF00FF87) else Color(0xFFFF5252), RoundedCornerShape(8.dp))
                         .padding(horizontal = 10.dp, vertical = 4.dp)
                 ) {
                     Text(
                         text = "${activeTime}s",
                         fontWeight = FontWeight.Black,
-                        fontSize = 14.sp,
-                        color = if (isTurn) Color(0xFF00FF87) else Color(0xFFFF5252)
+                        fontSize = 13.sp,
+                        color = if (isMyTurn(isTurn, isThinking)) Color(0xFF00FF87) else Color(0xFFFF5252)
                     )
                 }
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                    text = if (isTurn) "YOUR TURN" else "PLAYING",
+                    text = if (isMyTurn(isTurn, isThinking)) "YOUR MOVE" else "WAITING",
                     fontSize = 9.sp,
-                    fontWeight = FontWeight.Bold,
                     color = Color(0xFF8B8A9D),
-                    letterSpacing = 1.sp
+                    fontWeight = FontWeight.Bold
                 )
             }
 
-            // Opponent Details Right
+            // Masked Opponent Right
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.End,
-                modifier = Modifier
-                    .weight(1f)
-                    .opacityIf(isTurn || isThinking)
+                modifier = Modifier.weight(1f).graphicsLayer(alpha = if (!isMyTurn(isTurn, isThinking)) 1f else 0.45f)
             ) {
                 Column(horizontalAlignment = Alignment.End) {
                     Text(
-                        text = opponent.name,
+                        text = maskOpponentName(opponent.name),
                         color = Color.White,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp,
+                        fontSize = 12.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Text(
-                        text = "Sign: O",
-                        color = Color(0xFFFF5252),
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 11.sp
-                    )
+                    Text("O SIGN", color = Color(0xFFFF5252), fontWeight = FontWeight.Bold, fontSize = 10.sp)
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 Box(
-                    modifier = Modifier
-                        .size(38.dp)
-                        .background(opponent.avatarBg, CircleShape),
+                    modifier = Modifier.size(36.dp).background(opponent.avatarBg, CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(opponent.avatarEmoji, fontSize = 18.sp)
+                    Text(opponent.avatarEmoji, fontSize = 16.sp)
                 }
             }
         }
 
-        // Opponent is typing overlay if processing
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // Thinking HUD overlay
         AnimatedVisibility(visible = isThinking) {
             Row(
                 modifier = Modifier
                     .background(Color(0xFF1B192E), RoundedCornerShape(12.dp))
-                    .padding(horizontal = 14.dp, vertical = 5.dp),
+                    .padding(horizontal = 14.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                DotPulseAnimation()
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = "Opponent is picking a cell...",
-                    color = Color(0xFFBDC2E8),
-                    fontSize = 12.sp
-                )
+                CircularProgressIndicator(color = Color(0xFF00FF87), modifier = Modifier.size(12.dp), strokeWidth = 1.8.dp)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Opponent is drafting move...", color = Color(0xFFBDC2E8), fontSize = 12.sp)
             }
         }
 
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-        // THE BOARD GRID
-        GameBoardGrid(board = board, isMyTurn = isTurn, onSelectCell = { index ->
-            viewModel.makePlayerMove(index)
+        // Dynamic playgrid board
+        GameBoardGrid(board = board, isMyTurn = isTurn && !isThinking, onSelectCell = { cellIndex ->
+            viewModel.makePlayerMove(cellIndex)
         })
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.weight(1f))
 
-        // INTERACTIVE IN-GAME CHAT BOARD (Realism driver)
-        Card(
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF13111E)),
-            shape = RoundedCornerShape(16.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
-                .padding(horizontal = 16.dp)
-                .border(1.dp, Color(0xFF221F35), RoundedCornerShape(16.dp))
-        ) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                // Mini chat title banner
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(Color(0xFF191726))
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "MATCH CHAT LOG",
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF908CB4),
-                        letterSpacing = 1.sp
-                    )
-                    Icon(
-                        imageVector = Icons.Default.Lock,
-                        contentDescription = null,
-                        tint = Color(0xFF4C4A63),
-                        modifier = Modifier.size(12.dp)
-                    )
-                }
-
-                if (chats.isEmpty()) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "Lobby is ready. Tap prompts below to chat!",
-                            color = Color(0xFF46445B),
-                            fontSize = 12.sp
-                        )
-                    }
-                } else {
-                    LazyColumn(
-                        state = chatListState,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f)
-                            .padding(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        items(chats) { item ->
-                            ChatBubbleRow(item)
-                        }
-                    }
-                }
-
-                // Presets prompt keyboard
-                HorizontalPresetSelector(onSelectedText = { preset ->
-                    viewModel.sendPlayerChat(preset)
-                })
-            }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
+        Text(
+            text = "No in-game chatting permitted during tournaments.",
+            color = Color(0xFF454359),
+            fontSize = 11.sp,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(bottom = 16.dp)
+        )
+        
+        AdmobBanner(modifier = Modifier.padding(bottom = 12.dp))
     }
 }
 
-// Opacity modifier helper
-fun Modifier.opacityIf(condition: Boolean): Modifier {
-    return this.graphicsLayer(alpha = if (condition) 1.0f else 0.45f)
+fun isMyTurn(isTurn: Boolean, isThinking: Boolean): Boolean {
+    return isTurn && !isThinking
 }
-
-// --- COMPOSE RIPPLE GAMEBOARD ---
 
 @Composable
 fun GameBoardGrid(
@@ -2783,61 +2374,42 @@ fun GameBoardGrid(
             .border(2.dp, Color(0xFF23203C), RoundedCornerShape(20.dp))
             .padding(12.dp)
     ) {
-        // Grid lines drawing
         Column(modifier = Modifier.fillMaxSize()) {
             for (row in 0..2) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                ) {
+                Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
                     for (col in 0..2) {
                         val index = row * 3 + col
-                        val mark = board[index]
+                        val symbolMark = board[index]
 
                         Box(
                             modifier = Modifier
                                 .weight(1f)
                                 .fillMaxHeight()
-                                .padding(6.dp)
+                                .padding(5.dp)
                                 .clip(RoundedCornerShape(12.dp))
-                                .background(
-                                    if (mark.isEmpty()) Color(0xFF1A182E) else Color(0xFF23203D)
-                                )
+                                .background(if (symbolMark.isEmpty()) Color(0xFF1A182E) else Color(0xFF23203D))
                                 .border(
                                     1.dp,
-                                    if (mark == "X") Color(0xFF00FF87).copy(alpha = 0.5f)
-                                    else if (mark == "O") Color(0xFFFF5252).copy(alpha = 0.5f)
-                                    else Color(0xFF2B2844),
+                                    if (symbolMark == "X") Color(0xFF00FF87).copy(alpha = 0.5f)
+                                    else if (symbolMark == "O") Color(0xFFFF5252).copy(alpha = 0.5f)
+                                    else Color(0xFF2D2A47),
                                     RoundedCornerShape(12.dp)
                                 )
                                 .clickable(
-                                    enabled = mark.isEmpty() && isMyTurn,
+                                    enabled = symbolMark.isEmpty() && isMyTurn,
                                     onClick = { onSelectCell(index) }
                                 )
                                 .testTag("cell_$index"),
                             contentAlignment = Alignment.Center
                         ) {
                             AnimatedContent(
-                                targetState = mark,
-                                transitionSpec = {
-                                    scaleIn(animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy)) togetherWith fadeOut()
-                                },
-                                label = "MarkReveal"
-                            ) { symbol ->
-                                when (symbol) {
-                                    "X" -> Text(
-                                        text = "X",
-                                        fontSize = 38.sp,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        color = Color(0xFF00FF87)
-                                    )
-                                    "O" -> Text(
-                                        text = "O",
-                                        fontSize = 38.sp,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        color = Color(0xFFFF5252)
-                                    )
+                                targetState = symbolMark,
+                                transitionSpec = { scaleIn() togetherWith fadeOut() },
+                                label = "BoardCellReveal"
+                            ) { mark ->
+                                when (mark) {
+                                    "X" -> Text("X", fontSize = 38.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00FF87))
+                                    "O" -> Text("O", fontSize = 38.sp, fontWeight = FontWeight.Bold, color = Color(0xFFFF5252))
                                     else -> Box(modifier = Modifier.size(1.dp))
                                 }
                             }
@@ -2849,471 +2421,123 @@ fun GameBoardGrid(
     }
 }
 
-// --- CHAT COMPONENTS ---
-
-@Composable
-fun ChatBubbleRow(msg: ChatMessage) {
-    val isUser = msg.isPlayer
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
-    ) {
-        Column(
-            horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
-        ) {
-            Text(
-                text = msg.sender,
-                fontSize = 10.sp,
-                color = Color(0xFF6B6984),
-                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-            )
-
-            Box(
-                modifier = Modifier
-                    .background(
-                        if (isUser) Color(0xFF7000FF) else Color(0xFF1F1E33),
-                        RoundedCornerShape(
-                            topStart = 12.dp,
-                            topEnd = 12.dp,
-                            bottomStart = if (isUser) 12.dp else 2.dp,
-                            bottomEnd = if (isUser) 2.dp else 12.dp
-                        )
-                    )
-                    .padding(horizontal = 14.dp, vertical = 8.dp)
-                    .widthIn(max = 240.dp)
-            ) {
-                Text(
-                    text = msg.text,
-                    color = Color.White,
-                    fontSize = 13.sp
-                )
-            }
-        }
-    }
-}
-
-@Composable
-fun HorizontalPresetSelector(onSelectedText: (String) -> Unit) {
-    val list = listOf("GLHF! 👋", "Nice move! 🎯", "Oops... 💀", "No way! 🙀", "GG WP! 🏆")
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(Color(0xFF110F1D))
-            .padding(vertical = 10.dp)
-    ) {
-        Text(
-            text = "TAP PRESET PROMPT TO CHAT:",
-            fontSize = 9.sp,
-            color = Color(0xFF53516B),
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(start = 12.dp, bottom = 6.dp)
-        )
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 10.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            list.forEach { prompt ->
-                Box(
-                    modifier = Modifier
-                        .background(Color(0xFF1E1C30), RoundedCornerShape(10.dp))
-                        .clickable { onSelectedText(prompt) }
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
-                        .testTag("chat_preset_${prompt.take(4)}")
-                ) {
-                    Text(
-                        text = prompt,
-                        color = Color.White,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium
-                    )
-                }
-            }
-        }
-    }
-}
-
-
-
-// --- DOTS PULSING ANIMATION ELEMENT ---
-
-@Composable
-fun DotPulseAnimation() {
-    val transition = rememberInfiniteTransition(label = "Dots")
-    val dotCount = 3
-    val dots = (0 until dotCount).map { index ->
-        transition.animateFloat(
-            initialValue = 0.2f,
-            targetValue = 1f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(600, delayMillis = index * 150, easing = EaseInOutSine),
-                repeatMode = RepeatMode.Reverse
-            ),
-            label = "Dot $index"
-        )
-    }
-
-    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        dots.forEach { dotScale ->
-            Box(
-                modifier = Modifier
-                    .size(6.dp)
-                    .graphicsLayer(alpha = dotScale.value)
-                    .background(Color(0xFF00FF87), CircleShape)
-            )
-        }
-    }
-}
-
-// --- 6. GAME OVER DIVISION / PROMOTION RATINGS SUMMARY ---
-
+// --- SCREEN 8: GAME OVER TERMINATION ---
 @Composable
 fun GameOverScreen(viewModel: TicTacToeViewModel) {
-    val profile by viewModel.playerProfile.collectAsState()
+    val winner by viewModel.winner.collectAsState()
     val opponent by viewModel.opponent.collectAsState()
-    val winnerSymbol by viewModel.winner.collectAsState()
 
-    val isWin = winnerSymbol == "X"
-    val isDraw = winnerSymbol == "DRAW"
+    val isWin = winner == "X"
+    val isDraw = winner == "DRAW"
 
-    val context = LocalContext.current
+    val headerText = if (isWin) "VICTORY MATCH!" else if (isDraw) "MATCH TIED" else "DEFEAT"
+    val colorAccent = if (isWin) Color(0xFF00FF87) else if (isDraw) Color(0xFF8B8A9D) else Color(0xFFFF5252)
 
-    var showInsufficientFundsDetails by remember { mutableStateOf(false) }
-    var showAdPromptDetails by remember { mutableStateOf(false) }
-    var statusMessage by remember { mutableStateOf<String?>(null) }
-
-    if (showInsufficientFundsDetails) {
-        AlertDialog(
-            onDismissRequest = { showInsufficientFundsDetails = false },
-            containerColor = Color(0xFF161524),
-            titleContentColor = Color.White,
-            textContentColor = Color(0xFF8B8A9D),
-            title = {
-                Text(
-                    text = "⚠️ INSUFFICIENT BALANCE",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp,
-                    color = Color(0xFFFF5252)
-                )
-            },
-            text = {
-                Column {
-                    Text(
-                        text = "To join the Competitive Arena, you need at least ₹0.10 entry fee.",
-                        fontSize = 14.sp,
-                        color = Color.White
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text(
-                        text = "Don't worry! Watch a short sponsor ad video now to receive a FREE +₹0.50 Top-Up instantly and keep playing!",
-                        fontSize = 12.sp,
-                        color = Color(0xFF8B8A9D)
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val activity = context.findActivity()
-                        if (activity != null) {
-                            showInsufficientFundsDetails = false
-                            statusMessage = "Loading Sponsor Video..."
-                            viewModel.watchRewardedAdForTopUp(
-                                activity = activity,
-                                onSuccess = {
-                                    statusMessage = "Success! Received Free ₹0.50 Top-Up!"
-                                },
-                                onFailure = {
-                                    statusMessage = "Ad closed or failed. Try again!"
-                                }
-                            )
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF87)),
-                    shape = RoundedCornerShape(10.dp)
-                ) {
-                    Text(text = "WATCH FREE AD", color = Color(0xFF040306), fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showInsufficientFundsDetails = false }) {
-                    Text(text = "CANCEL", color = Color(0xFF8B8A9D))
-                }
-            }
-        )
-    }
-
-    if (showAdPromptDetails) {
-        AlertDialog(
-            onDismissRequest = { showAdPromptDetails = false },
-            containerColor = Color(0xFF161524),
-            titleContentColor = Color.White,
-            textContentColor = Color(0xFF8B8A9D),
-            title = {
-                Text(
-                    text = "⚔️ JOIN ARENA QUEUE",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp,
-                    color = Color(0xFF00FF87)
-                )
-            },
-            text = {
-                Column {
-                    Text(
-                        text = "To play a match and climb the leaderboard divisions, you must pay the entry fee and support our sponsors.",
-                        fontSize = 13.sp,
-                        color = Color(0xFF8B8A9D)
-                    )
-                    Spacer(modifier = Modifier.height(14.dp))
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(Color(0xFF0F0D1A), RoundedCornerShape(10.dp))
-                            .padding(12.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column {
-                            Text("ENTRY FEE", fontSize = 10.sp, color = Color(0xFF8B8A9D), fontWeight = FontWeight.Bold)
-                            Text("₹0.10", fontSize = 15.sp, color = Color(0xFFFF5252), fontWeight = FontWeight.Bold)
-                        }
-                        Column {
-                            Text("SPONSOR AD", fontSize = 10.sp, color = Color(0xFF8B8A9D), fontWeight = FontWeight.Bold)
-                            Text("1 Video Clip", fontSize = 15.sp, color = Color(0xFF7000FF), fontWeight = FontWeight.Bold)
-                        }
-                        Column {
-                            Text("WIN PAYOUT", fontSize = 10.sp, color = Color(0xFF8B8A9D), fontWeight = FontWeight.Bold)
-                            Text("+₹0.18", fontSize = 15.sp, color = Color(0xFF00FF87), fontWeight = FontWeight.Bold)
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text(
-                        text = "Loss of this match will forfeit the ₹0.10 entry fee. Draws refund your entry fee fully (₹0.10)!",
-                        fontSize = 11.sp,
-                        color = Color(0xFF8B8A9D)
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val activity = context.findActivity()
-                        if (activity != null) {
-                            showAdPromptDetails = false
-                            statusMessage = "Loading Sponsor Ad..."
-                            viewModel.checkAndStartMatch(
-                                activity = activity,
-                                onSuccess = {
-                                    statusMessage = "Paid ₹0.10 and authenticated! Finding match..."
-                                    viewModel.startMatchmaking()
-                                },
-                                onFail = { reason ->
-                                    if (reason == "INSUFFICIENT_FUNDS") {
-                                        showInsufficientFundsDetails = true
-                                    } else {
-                                        statusMessage = "You must watch the ad completely to enter."
-                                    }
-                                }
-                            )
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7000FF)),
-                    shape = RoundedCornerShape(10.dp)
-                ) {
-                    Text(text = "PAY & WATCH AD", color = Color.White, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showAdPromptDetails = false }) {
-                    Text(text = "CANCEL", color = Color(0xFF8B8A9D))
-                }
-            }
-        )
-    }
-
-    if (statusMessage != null) {
-        LaunchedEffect(statusMessage) {
-            delay(3500)
-            statusMessage = null
-        }
-        AlertDialog(
-            onDismissRequest = { statusMessage = null },
-            containerColor = Color(0xFF161524),
-            title = { Text("Arena Alert", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold) },
-            text = { Text(statusMessage ?: "", color = Color.White, fontSize = 14.sp) },
-            confirmButton = {
-                TextButton(onClick = { statusMessage = null }) {
-                    Text("OK", color = Color(0xFF00FF87))
-                }
-            }
-        )
-    }
+    val gradientBrush = Brush.verticalGradient(
+        colors = listOf(Color(0xFF120E22), Color(0xFF090710))
+    )
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF0A0910))
+            .background(gradientBrush)
             .windowInsetsPadding(WindowInsets.safeDrawing)
             .padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        // High-fidelity outcome headline
+        Box(
+            modifier = Modifier
+                .size(100.dp)
+                .background(colorAccent.copy(alpha = 0.1f), CircleShape)
+                .border(2.dp, colorAccent, CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(text = if (isWin) "🏆" else if (isDraw) "🤝" else "💥", fontSize = 48.sp)
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
         Text(
-            text = if (isWin) "COMPETITIVE VICTORY!" else if (isDraw) "TACTICAL DEADLOCK" else "MATCH OVER",
-            fontSize = 24.sp,
+            text = headerText,
+            color = colorAccent,
+            fontSize = 32.sp,
             fontWeight = FontWeight.Black,
-            color = if (isWin) Color(0xFF00FF87) else if (isDraw) Color(0xFF8B8A9D) else Color(0xFFFF5252),
-            letterSpacing = 1.5.sp,
-            textAlign = TextAlign.Center
+            letterSpacing = 1.sp
         )
 
-        Spacer(modifier = Modifier.height(30.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
-        // Large Victory Emblem with Opponent details
+        Text(
+            text = "Tournament Versus: ${maskOpponentName(opponent.name)}",
+            color = Color(0xFFBDC2E8),
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Medium
+        )
+
+        Spacer(modifier = Modifier.height(20.dp))
+
         Card(
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF151325)),
-            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF161427)),
+            shape = RoundedCornerShape(16.dp),
             modifier = Modifier
                 .fillMaxWidth()
-                .border(
-                    1.5.dp,
-                    if (isWin) Color(0xFF00FF87).copy(alpha = 0.4f) else Color(0xFF2C274B),
-                    RoundedCornerShape(24.dp)
-                )
+                .border(1.dp, Color(0xFF2E2A4D), RoundedCornerShape(16.dp))
         ) {
             Column(
-                modifier = Modifier
-                    .padding(24.dp)
-                    .fillMaxWidth(),
+                modifier = Modifier.padding(20.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // Opponent signature card
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(42.dp)
-                            .background(opponent.avatarBg, CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(opponent.avatarEmoji, fontSize = 20.sp)
-                    }
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column {
-                        Text(
-                            text = opponent.name,
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp
-                        )
-                        Text(
-                            text = "Opponent Tier: ${opponent.rankTitle}",
-                            color = Color(0xFF8B8A9D),
-                            fontSize = 11.sp
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(24.dp))
-
-                // Rating points meter counting
+                Text(text = "POINT PAYOUT STATEMENT", color = Color(0xFF8C86AA), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "LADDER PROGRESSION",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color(0xFF8B8A9D),
-                    letterSpacing = 1.sp
+                    text = if (isWin) "+300 POINTS" else if (isDraw) "0 POINTS" else "-50 POINTS",
+                    color = if (isWin) Color(0xFF00FF87) else if (isDraw) Color.White else Color(0xFFFF5252),
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Black
                 )
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                val rankInfo = getRankBadgeInfo(profile?.rankPoints ?: 1200)
-                Box(
-                    modifier = Modifier
-                        .background(Color(0xFF221F38), RoundedCornerShape(12.dp))
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
-                ) {
-                    Text(
-                        text = "${profile?.rankPoints ?: 1200} LP  (${rankInfo.first})",
-                        color = rankInfo.second,
-                        fontWeight = FontWeight.Black,
-                        fontSize = 16.sp
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
+                Spacer(modifier = Modifier.height(6.dp))
                 Text(
-                    text = if (isWin) "+26 LP (Rank Increase!)" else if (isDraw) "+2 LP (Safe Draw)" else "-12 LP",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp,
-                    color = if (isWin || isDraw) Color(0xFF00FF87) else Color(0xFFFF5252)
+                    text = if (isWin) "Perfect gameplay! Bonus balance saved instantly to your profile." 
+                    else if (isDraw) "Draw has resolved. Reposition yourself to seal victory next!" 
+                    else "Slight fatfinger mistake cost 50 points. Watch rewarded videos for fast replenishment!",
+                    color = Color(0xFF8B8A9D),
+                    fontSize = 12.sp,
+                    textAlign = TextAlign.Center
                 )
             }
         }
 
-    Spacer(modifier = Modifier.height(36.dp))
+        Spacer(modifier = Modifier.height(40.dp))
 
-    val context = LocalContext.current
+        // Play Again Button (Directly queues user again)
+        Button(
+            onClick = { viewModel.playAgain() },
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF87)),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+        ) {
+            Text("PLAY CHALLENGE AGAIN", color = Color.Black, fontWeight = FontWeight.Bold)
+        }
 
-    // Play Again & Exit button columns
-    Button(
-        onClick = {
-            val currentBal = profile?.walletBalance ?: 10.00
-            if (currentBal < 0.10) {
-                showInsufficientFundsDetails = true
-            } else {
-                showAdPromptDetails = true
-            }
-        },
-        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7000FF)),
-        shape = RoundedCornerShape(14.dp),
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(50.dp)
-            .testTag("play_again_button")
-    ) {
-        Icon(Icons.Default.Refresh, contentDescription = null)
-        Spacer(modifier = Modifier.width(8.dp))
-        Text(
-            text = "FIND ANOTHER MATCH",
-            fontWeight = FontWeight.Bold,
-            letterSpacing = 0.5.sp
-        )
-    }
+        Spacer(modifier = Modifier.height(12.dp))
 
-    Spacer(modifier = Modifier.height(12.dp))
-
-    OutlinedButton(
-        onClick = {
-            val activity = context.findActivity()
-            if (activity != null) {
-                AdManager.showInterstitial(activity) {
-                    viewModel.exitToHome()
-                }
-            } else {
-                viewModel.exitToHome()
-            }
-        },
-        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-        border = ButtonDefaults.outlinedButtonBorder.copy(brush = Brush.radialGradient(listOf(Color(0xFF2C274B), Color(0xFF2C274B)))),
-        shape = RoundedCornerShape(14.dp),
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(50.dp)
-            .testTag("exit_home_button")
-    ) {
-        Text(
-            text = "EXIT TO DASHBOARD",
-            fontWeight = FontWeight.Bold,
-            letterSpacing = 0.5.sp
-        )
-    }
+        // Exit to main home
+        OutlinedButton(
+            onClick = { viewModel.exitToHome() },
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+            border = BorderStroke(1.dp, Color(0xFF2E2A4D)),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+        ) {
+            Text("EXIT TO HOME ARENA", fontWeight = FontWeight.Bold)
+        }
+        
+        Spacer(modifier = Modifier.height(20.dp))
+        AdmobBanner()
     }
 }
