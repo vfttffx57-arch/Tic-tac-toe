@@ -43,6 +43,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.AndroidViewModel
+import android.app.Application
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -142,7 +144,19 @@ fun maskOpponentName(name: String): String {
 }
 
 // --- VIEW MODEL ---
-class TicTacToeViewModel : ViewModel() {
+class TicTacToeViewModel(application: Application) : AndroidViewModel(application) {
+
+    private fun getSharedPrefs(): SharedPreferences {
+        return getApplication<Application>().getSharedPreferences("user_session", Context.MODE_PRIVATE)
+    }
+
+    private fun loadPointsLocally(): Int {
+        return getSharedPrefs().getInt("points", 200)
+    }
+
+    private fun savePointsLocally(points: Int) {
+        getSharedPrefs().edit().putInt("points", points).apply()
+    }
 
     // Auth Session Info
     private val _userEmail = MutableStateFlow<String?>(null)
@@ -232,6 +246,7 @@ class TicTacToeViewModel : ViewModel() {
         if (savedUid != null && savedEmail != null) {
             _userUid.value = savedUid
             _userEmail.value = savedEmail
+            _userPoints.value = loadPointsLocally()
             _currentScreen.value = ScreenState.HOME
             refreshUserProfile()
             loadRedeemHistory()
@@ -263,10 +278,12 @@ class TicTacToeViewModel : ViewModel() {
                 val profile = FirebaseService.getUserProfile(result.uid)
                 if (profile != null) {
                     _userPoints.value = profile.points
+                    savePointsLocally(profile.points)
                 } else {
                     // Initialize first if profile failed to fetch
                     FirebaseService.saveUserProfile(result.uid, result.email, 200)
                     _userPoints.value = 200
+                    savePointsLocally(200)
                 }
 
                 _currentScreen.value = ScreenState.HOME
@@ -307,10 +324,12 @@ class TicTacToeViewModel : ViewModel() {
                 val existingProfile = FirebaseService.getUserProfile(result.uid)
                 if (existingProfile != null) {
                     _userPoints.value = existingProfile.points
+                    savePointsLocally(existingProfile.points)
                 } else {
                     // Register 200 Points default welcome balance in Cloud Database
                     FirebaseService.saveUserProfile(result.uid, result.email, 200)
                     _userPoints.value = 200
+                    savePointsLocally(200)
                 }
 
                 _currentScreen.value = ScreenState.HOME
@@ -339,6 +358,7 @@ class TicTacToeViewModel : ViewModel() {
             val profile = FirebaseService.getUserProfile(uid)
             if (profile != null) {
                 _userPoints.value = profile.points
+                savePointsLocally(profile.points)
             }
         }
     }
@@ -371,6 +391,7 @@ class TicTacToeViewModel : ViewModel() {
                     val newBalance = _userPoints.value + 150
                     FirebaseService.saveUserProfile(uid, email, newBalance)
                     _userPoints.value = newBalance
+                    savePointsLocally(newBalance)
                     Toast.makeText(activity, "Successfully earned +150 Points!", Toast.LENGTH_SHORT).show()
                 }
             },
@@ -396,6 +417,7 @@ class TicTacToeViewModel : ViewModel() {
             val savedOk = FirebaseService.saveUserProfile(uid, email, netPoints)
             if (savedOk) {
                 _userPoints.value = netPoints
+                savePointsLocally(netPoints)
                 val submitted = FirebaseService.submitRedeemRequest(uid, email, 1000)
                 if (submitted) {
                     Toast.makeText(context, "Successfully Claimed ₹10 Play Store Card! Pending Admin confirmation.", Toast.LENGTH_LONG).show()
@@ -641,6 +663,7 @@ class TicTacToeViewModel : ViewModel() {
             // Update balance in Cloud Firebase database
             FirebaseService.saveUserProfile(uid, email, finalPoints)
             _userPoints.value = finalPoints
+            savePointsLocally(finalPoints)
 
             // Record outcome to match logs
             val outcome = if (isWin) "WIN" else if (isDraw) "DRAW" else "LOSS"
@@ -659,6 +682,7 @@ class TicTacToeViewModel : ViewModel() {
             val ok = FirebaseService.saveUserProfile(uid, email, newBalance)
             if (ok) {
                 _userPoints.value = newBalance
+                savePointsLocally(newBalance)
                 Toast.makeText(context, "Admin: Added $pointsToAdd points! New balance: $newBalance", Toast.LENGTH_LONG).show()
             } else {
                 Toast.makeText(context, "Sync error updating admin points", Toast.LENGTH_SHORT).show()
@@ -707,11 +731,11 @@ class TicTacToeViewModel : ViewModel() {
     }
 }
 
-class TicTacToeViewModelFactory : ViewModelProvider.Factory {
+class TicTacToeViewModelFactory(private val application: Application) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(TicTacToeViewModel::class.java)) {
             @Suppress("UNCHECKED_CAST")
-            return TicTacToeViewModel() as T
+            return TicTacToeViewModel(application) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }
@@ -726,7 +750,8 @@ class MainActivity : ComponentActivity() {
         setContent {
             MyApplicationTheme {
                 val context = LocalContext.current
-                val viewModel: TicTacToeViewModel = viewModel(factory = TicTacToeViewModelFactory())
+                val app = context.applicationContext as Application
+                val viewModel: TicTacToeViewModel = viewModel(factory = TicTacToeViewModelFactory(app))
 
                 // Checking if user is pre-authenticated
                 LaunchedEffect(Unit) {
@@ -763,18 +788,19 @@ object AdManager {
     private var currentRewardEarned = false
 
     fun init(context: android.content.Context) {
+        val appContext = context.applicationContext
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
         Log.d("AdManager", "Initializing InMobi SDK with Account: $APP_KEY")
         try {
             val consentObject = JSONObject()
-            InMobiSdk.init(context, APP_KEY, consentObject, object : SdkInitializationListener {
+            InMobiSdk.init(appContext, APP_KEY, consentObject, object : SdkInitializationListener {
                 override fun onInitializationComplete(error: java.lang.Error?) {
                     mainHandler.post {
                         if (error == null) {
                             isInitialized = true
                             Log.d("AdManager", "InMobi initialization complete")
-                            loadRewarded(context)
-                            loadInterstitial(context)
+                            loadRewarded(appContext)
+                            loadInterstitial(appContext)
                         } else {
                             Log.e("AdManager", "InMobi initialization failed: ${error.message}")
                         }
@@ -787,6 +813,7 @@ object AdManager {
     }
 
     fun loadRewarded(context: android.content.Context) {
+        val appContext = context.applicationContext
         if (isRewardedLoading || mRewardedAd != null) return
         isRewardedLoading = true
         Log.d("AdManager", "Loading InMobi Rewarded...")
@@ -794,7 +821,7 @@ object AdManager {
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
         mainHandler.post {
             try {
-                mRewardedAd = InMobiInterstitial(context, REWARDED_PLACEMENT_ID, object : InterstitialAdEventListener() {
+                mRewardedAd = InMobiInterstitial(appContext, REWARDED_PLACEMENT_ID, object : InterstitialAdEventListener() {
                     override fun onAdFetchSuccessful(ad: InMobiInterstitial, info: AdMetaInfo) {
                         Log.d("AdManager", "InMobi Rewarded fetch successful")
                     }
@@ -812,7 +839,7 @@ object AdManager {
 
                     override fun onAdDismissed(ad: InMobiInterstitial) {
                         mRewardedAd = null
-                        loadRewarded(context)
+                        loadRewarded(appContext)
 
                         val earned = currentRewardEarned
                         val dismiss = currentRewardDismissCallback
@@ -863,6 +890,7 @@ object AdManager {
     }
 
     fun loadInterstitial(context: android.content.Context) {
+        val appContext = context.applicationContext
         if (isInterstitialLoading || mInterstitialAd != null) return
         isInterstitialLoading = true
         Log.d("AdManager", "Loading InMobi Interstitial...")
@@ -870,7 +898,7 @@ object AdManager {
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
         mainHandler.post {
             try {
-                mInterstitialAd = InMobiInterstitial(context, INTERSTITIAL_PLACEMENT_ID, object : InterstitialAdEventListener() {
+                mInterstitialAd = InMobiInterstitial(appContext, INTERSTITIAL_PLACEMENT_ID, object : InterstitialAdEventListener() {
                     override fun onAdFetchSuccessful(ad: InMobiInterstitial, info: AdMetaInfo) {
                         Log.d("AdManager", "InMobi Interstitial fetch successful")
                     }
@@ -888,7 +916,7 @@ object AdManager {
 
                     override fun onAdDismissed(ad: InMobiInterstitial) {
                         mInterstitialAd = null
-                        loadInterstitial(context)
+                        loadInterstitial(appContext)
                         currentInterstitialDismissCallback?.invoke()
                         currentInterstitialDismissCallback = null
                     }

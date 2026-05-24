@@ -156,7 +156,7 @@ object FirebaseService {
 
     suspend fun saveUserProfile(uid: String, email: String, points: Int): Boolean = withContext(Dispatchers.IO) {
         try {
-            val url = "$FIRESTORE_BASE_URL/users/$uid?updateMask.fieldPaths=email&updateMask.fieldPaths=points&key=$API_KEY"
+            val url = "$FIRESTORE_BASE_URL/users/$uid?key=$API_KEY"
             
             // Build the Firestore Document Payload
             val emailVal = JSONObject().put("stringValue", email)
