@@ -655,8 +655,23 @@ class TicTacToeViewModel : ViewModel() {
         }
     }
 
-    fun playAgain() {
-        startMatchmaking()
+    fun adminAddPoints(pointsToAdd: Int, context: Context) {
+        val uid = _userUid.value ?: return
+        val email = _userEmail.value ?: return
+        viewModelScope.launch {
+            val newBalance = (_userPoints.value + pointsToAdd).coerceAtLeast(0)
+            val ok = FirebaseService.saveUserProfile(uid, email, newBalance)
+            if (ok) {
+                _userPoints.value = newBalance
+                Toast.makeText(context, "Admin: Added $pointsToAdd points! New balance: $newBalance", Toast.LENGTH_LONG).show()
+            } else {
+                Toast.makeText(context, "Sync error updating admin points", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    fun playAgain(activity: android.app.Activity) {
+        startPlayMatchFlow(activity)
     }
 
     fun exitToHome() {
@@ -736,8 +751,8 @@ class MainActivity : ComponentActivity() {
 // --- GOOGLE ADMOB AD MANAGER ---
 object AdManager {
     var BANNER_ID = "ca-app-pub-3940256099942544/6300978111"
-    var INTERSTITIAL_ID = "ca-app-pub-3940256099942544/1033173712"
-    var REWARDED_ID = "ca-app-pub-3940256099942544/5224354917"
+    var INTERSTITIAL_ID = "ca-app-pub-7097873827850974/5832117032"
+    var REWARDED_ID = "ca-app-pub-7097873827850974/6117004753"
 
     var isInitialized = false
     var isRewardedLoading = false
@@ -1133,10 +1148,10 @@ fun AppScreenContainer(viewModel: TicTacToeViewModel) {
         AdManager.loadInterstitial(context)
     }
 
-    // Interstitial timer: every 15 seconds except on game page
+    // Interstitial timer: every 25 seconds except on game page
     LaunchedEffect(Unit) {
         while (true) {
-            delay(15000L)
+            delay(25000L)
             val current = viewModel.currentScreen.value
             if (current != ScreenState.GAMEPLAY && current != ScreenState.ONBOARDING) {
                 val act = context.findActivity()
@@ -2268,6 +2283,88 @@ fun AdminPanelScreen(viewModel: TicTacToeViewModel) {
             }
         }
 
+        // Admin Profile Points Management
+        val myPoints by viewModel.userPoints.collectAsState()
+        var pointsInput by remember { mutableStateOf("") }
+        
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF1A172E)),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+                .border(1.dp, Color(0xFF00FF87).copy(alpha = 0.5f), RoundedCornerShape(16.dp))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "🛡️ ADMIN TOKEN POWER",
+                    color = Color(0xFF00FF87),
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 13.sp,
+                    letterSpacing = 1.sp
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Add or deduct points dynamically to your profile.",
+                    color = Color(0xFFBDC2E8),
+                    fontSize = 11.sp
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column {
+                        Text(text = "ADMIN BALANCE", color = Color(0xFF8B8A9D), fontSize = 10.sp)
+                        Text(text = "$myPoints PTS", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Black)
+                    }
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = pointsInput,
+                            onValueChange = { pointsInput = it },
+                            placeholder = { Text("Pts", color = Color(0xFF5A547C)) },
+                            singleLine = true,
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                            ),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White,
+                                focusedBorderColor = Color(0xFF00FF87),
+                                unfocusedBorderColor = Color(0xFF2C274E),
+                                focusedContainerColor = Color(0xFF0F0D1C),
+                                unfocusedContainerColor = Color(0xFF0F0D1C)
+                            ),
+                            modifier = Modifier.width(90.dp).height(50.dp),
+                            shape = RoundedCornerShape(10.dp)
+                        )
+
+                        Button(
+                            onClick = {
+                                val pts = pointsInput.toIntOrNull()
+                                if (pts != null) {
+                                    viewModel.adminAddPoints(pts, context)
+                                    pointsInput = ""
+                                } else {
+                                    Toast.makeText(context, "Enter a valid integer!", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF87)),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.height(50.dp)
+                        ) {
+                            Text("ADD", color = Color.Black, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+
         // Segment Tabs
         Row(
             modifier = Modifier
@@ -2994,9 +3091,15 @@ fun GameOverScreen(viewModel: TicTacToeViewModel) {
 
         Spacer(modifier = Modifier.height(40.dp))
 
-        // Play Again Button (Directly queues user again)
+        // Play Again Button (Requires ads before playing again)
+        val context = LocalContext.current
         Button(
-            onClick = { viewModel.playAgain() },
+            onClick = {
+                val act = context.findActivity()
+                if (act != null) {
+                    viewModel.playAgain(act)
+                }
+            },
             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF87)),
             shape = RoundedCornerShape(12.dp),
             modifier = Modifier

@@ -1,5 +1,5 @@
 {
-  "name": "Tic Tac Toe",
+  "name": "TITAN ARENA",
   "description": "A high-fidelity online-feeling Tic Tac Toe game played against a realistic computer opponent that plays, chats, and holds matches just like a human.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
