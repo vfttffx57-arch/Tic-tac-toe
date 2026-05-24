@@ -307,9 +307,15 @@ class TicTacToeViewModel : ViewModel() {
                 val sp = context.getSharedPreferences("user_session", Context.MODE_PRIVATE)
                 sp.edit().putString("uid", result.uid).putString("email", result.email).apply()
 
-                // Register 200 Points default welcome balance in Cloud Database
-                val saveOk = FirebaseService.saveUserProfile(result.uid, result.email, 200)
-                _userPoints.value = 200
+                // Check first if profile already exists in Firestore (for user recovery/re-registration)
+                val existingProfile = FirebaseService.getUserProfile(result.uid)
+                if (existingProfile != null) {
+                    _userPoints.value = existingProfile.points
+                } else {
+                    // Register 200 Points default welcome balance in Cloud Database
+                    FirebaseService.saveUserProfile(result.uid, result.email, 200)
+                    _userPoints.value = 200
+                }
 
                 _currentScreen.value = ScreenState.HOME
                 loadRedeemHistory()
@@ -737,6 +743,9 @@ object AdManager {
     var isRewardedLoading = false
     private var mRewardedAd: RewardedAd? = null
 
+    var isInterstitialLoading = false
+    private var mInterstitialAd: InterstitialAd? = null
+
     fun init(context: android.content.Context) {
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
         Log.d("AdManager", "Initializing Google Mobile Ads")
@@ -746,6 +755,7 @@ object AdManager {
                     isInitialized = true
                     Log.d("AdManager", "Initialization complete")
                     loadRewarded(context)
+                    loadInterstitial(context)
                 }
             }
         } catch (e: Exception) {
@@ -768,6 +778,25 @@ object AdManager {
                 mRewardedAd = null
                 isRewardedLoading = false
                 Log.e("AdManager", "Admob Rewarded failed to load: ${loadAdError.message}")
+            }
+        })
+    }
+
+    fun loadInterstitial(context: android.content.Context) {
+        if (isInterstitialLoading || mInterstitialAd != null) return
+        isInterstitialLoading = true
+        val adRequest = AdRequest.Builder().build()
+        InterstitialAd.load(context, INTERSTITIAL_ID, adRequest, object : InterstitialAdLoadCallback() {
+            override fun onAdLoaded(interstitialAd: InterstitialAd) {
+                mInterstitialAd = interstitialAd
+                isInterstitialLoading = false
+                Log.d("AdManager", "Admob Interstitial loaded successfully")
+            }
+
+            override fun onAdFailedToLoad(loadAdError: LoadAdError) {
+                mInterstitialAd = null
+                isInterstitialLoading = false
+                Log.e("AdManager", "Admob Interstitial failed to load: ${loadAdError.message}")
             }
         })
     }
@@ -803,6 +832,33 @@ object AdManager {
             } else {
                 // If live AdMob not cached/ready, show backup 5-sec sponsoring Dialog immediately!
                 showSimulatedSponsorAd(activity, onRewardEarned, onDismiss)
+            }
+        }
+    }
+
+    fun showInterstitial(activity: android.app.Activity, onDismiss: () -> Unit = {}) {
+        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+        mainHandler.post {
+            val ad = mInterstitialAd
+            if (ad != null) {
+                ad.fullScreenContentCallback = object : FullScreenContentCallback() {
+                    override fun onAdDismissedFullScreenContent() {
+                        mInterstitialAd = null
+                        loadInterstitial(activity)
+                        onDismiss()
+                    }
+
+                    override fun onAdFailedToShowFullScreenContent(adError: com.google.android.gms.ads.AdError) {
+                        mInterstitialAd = null
+                        loadInterstitial(activity)
+                        onDismiss()
+                    }
+                }
+                ad.show(activity)
+            } else {
+                // Preload again in case offline or failed
+                loadInterstitial(activity)
+                onDismiss()
             }
         }
     }
@@ -1070,6 +1126,26 @@ fun AdmobBanner(modifier: Modifier = Modifier) {
 fun AppScreenContainer(viewModel: TicTacToeViewModel) {
     val screenState by viewModel.currentScreen.collectAsState()
     val email by viewModel.userEmail.collectAsState()
+    val context = LocalContext.current
+
+    // Load interstitial proactively on screen changes
+    LaunchedEffect(screenState) {
+        AdManager.loadInterstitial(context)
+    }
+
+    // Interstitial timer: every 15 seconds except on game page
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(15000L)
+            val current = viewModel.currentScreen.value
+            if (current != ScreenState.GAMEPLAY && current != ScreenState.ONBOARDING) {
+                val act = context.findActivity()
+                if (act != null) {
+                    AdManager.showInterstitial(act)
+                }
+            }
+        }
+    }
 
     // Determine if we should show the fixed navigation bar
     val showNavBar = screenState == ScreenState.HOME || 
@@ -1232,13 +1308,14 @@ fun FirebaseLoginSetupScreen(viewModel: TicTacToeViewModel) {
     var emailInput by remember { mutableStateOf("") }
     var passwordInput by remember { mutableStateOf("") }
     var isSignUpMode by remember { mutableStateOf(false) }
+    var isPasswordVisible by remember { mutableStateOf(false) }
     
     val isLoading by viewModel.isLoginLoading.collectAsState()
     val authError by viewModel.authError.collectAsState()
     val context = LocalContext.current
 
     val gradientBrush = Brush.verticalGradient(
-        colors = listOf(Color(0xFF141221), Color(0xFF0D0A14))
+        colors = listOf(Color(0xFF0F0B1E), Color(0xFF070510))
     )
 
     Column(
@@ -1250,42 +1327,54 @@ fun FirebaseLoginSetupScreen(viewModel: TicTacToeViewModel) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
+        // App Identity Brand Icon
         Box(
             modifier = Modifier
-                .size(80.dp)
-                .background(Brush.radialGradient(listOf(Color(0xFF00FF87), Color.Transparent)), CircleShape)
+                .size(90.dp)
+                .background(Brush.radialGradient(listOf(Color(0xFF00FF87).copy(alpha = 0.3f), Color.Transparent)), CircleShape)
                 .wrapContentSize(Alignment.Center)
         ) {
-            Text(text = "⚔️", fontSize = 38.sp)
+            Card(
+                shape = CircleShape,
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF141221)),
+                modifier = Modifier
+                    .size(70.dp)
+                    .border(2.dp, Color(0xFF00FF87), CircleShape)
+                    .shadow(12.dp, CircleShape)
+            ) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(text = "⚔️", fontSize = 34.sp)
+                }
+            }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(20.dp))
 
         Text(
-            text = "Tic Tac Toe",
-            fontSize = 28.sp,
-            fontWeight = FontWeight.Black,
+            text = "TITAN ARENA",
+            fontSize = 32.sp,
+            fontWeight = FontWeight.ExtraBold,
             color = Color.White,
-            letterSpacing = 1.sp
+            letterSpacing = 2.sp
         )
 
         Text(
-            text = "CHAMPIONS PLAY ARENA",
+            text = "PLAY TIC TAC TOE • EARN PLAY CARDS",
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
             color = Color(0xFF00FF87),
-            letterSpacing = 4.sp
+            letterSpacing = 3.sp
         )
 
-        Spacer(modifier = Modifier.height(28.dp))
+        Spacer(modifier = Modifier.height(30.dp))
 
         Card(
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF19162B)),
-            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF141221)),
+            shape = RoundedCornerShape(24.dp),
             modifier = Modifier
                 .fillMaxWidth()
-                .border(1.dp, Color(0xFF2C274E), RoundedCornerShape(20.dp))
-                .shadow(8.dp, RoundedCornerShape(20.dp))
+                .border(1.dp, Color(0xFF2C274E), RoundedCornerShape(24.dp))
+                .shadow(16.dp, RoundedCornerShape(24.dp))
         ) {
             Column(
                 modifier = Modifier
@@ -1294,70 +1383,110 @@ fun FirebaseLoginSetupScreen(viewModel: TicTacToeViewModel) {
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = if (isSignUpMode) "CREATE NEW ACCOUNT" else "SECURE MEMBERS SIGN IN",
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold,
+                    text = if (isSignUpMode) "CREATE CHAMPION PROFILE" else "CHAMPION SECURE LOGIN",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.ExtraBold,
                     color = Color.White,
                     letterSpacing = 1.sp
                 )
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = if (isSignUpMode) "Sign up to start earning redeem codes!" else "Sign in to access your dashboard and points",
+                    fontSize = 11.sp,
+                    color = Color(0xFF8B8A9D),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(vertical = 4.dp)
+                )
+
+                Spacer(modifier = Modifier.height(20.dp))
 
                 // Email Input
                 OutlinedTextField(
                     value = emailInput,
                     onValueChange = { emailInput = it },
                     label = { Text("Email Address", color = Color(0xFF8B8A9D)) },
-                    placeholder = { Text("E.g., user@gmail.com", color = Color(0xFF5A547C)) },
+                    placeholder = { Text("username@domain.com", color = Color(0xFF5A547C)) },
                     singleLine = true,
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Email,
+                            contentDescription = "EmailIcon",
+                            tint = Color(0xFF00FF87)
+                        )
+                    },
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = Color.White,
                         unfocusedTextColor = Color.White,
                         focusedBorderColor = Color(0xFF00FF87),
                         unfocusedBorderColor = Color(0xFF2C274E),
-                        focusedContainerColor = Color(0xFF110E1E),
-                        unfocusedContainerColor = Color(0xFF110E1E)
+                        focusedContainerColor = Color(0xFF0E0B19),
+                        unfocusedContainerColor = Color(0xFF0E0B19)
                     ),
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp)
+                    modifier = Modifier.fillMaxWidth().testTag("login_email_input"),
+                    shape = RoundedCornerShape(14.dp)
                 )
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
-                // Password Input
+                // Password Input with Show/Hide visibility
                 OutlinedTextField(
                     value = passwordInput,
                     onValueChange = { passwordInput = it },
                     label = { Text("Password", color = Color(0xFF8B8A9D)) },
-                    visualTransformation = PasswordVisualTransformation(),
                     singleLine = true,
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Lock,
+                            contentDescription = "LockIcon",
+                            tint = Color(0xFF00FF87)
+                        )
+                    },
+                    trailingIcon = {
+                        IconButton(onClick = { isPasswordVisible = !isPasswordVisible }) {
+                            Icon(
+                                imageVector = if (isPasswordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                contentDescription = if (isPasswordVisible) "Hide password" else "Show password",
+                                tint = Color(0xFF8B8A9D)
+                            )
+                        }
+                    },
+                    visualTransformation = if (isPasswordVisible) androidx.compose.ui.text.input.VisualTransformation.None else PasswordVisualTransformation(),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = Color.White,
                         unfocusedTextColor = Color.White,
                         focusedBorderColor = Color(0xFF00FF87),
                         unfocusedBorderColor = Color(0xFF2C274E),
-                        focusedContainerColor = Color(0xFF110E1E),
-                        unfocusedContainerColor = Color(0xFF110E1E)
+                        focusedContainerColor = Color(0xFF0E0B19),
+                        unfocusedContainerColor = Color(0xFF0E0B19)
                     ),
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp)
+                    modifier = Modifier.fillMaxWidth().testTag("login_password_input"),
+                    shape = RoundedCornerShape(14.dp)
                 )
 
                 if (authError != null) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = authError ?: "",
-                        color = Color(0xFFFF5252),
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Medium,
-                        textAlign = TextAlign.Center
-                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFFFF5252).copy(alpha = 0.15f)),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = authError ?: "",
+                            color = Color(0xFFFF5252),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp).fillMaxWidth()
+                        )
+                    }
                 }
 
-                Spacer(modifier = Modifier.height(18.dp))
+                Spacer(modifier = Modifier.height(24.dp))
 
                 if (isLoading) {
-                    CircularProgressIndicator(color = Color(0xFF00FF87))
+                    Box(modifier = Modifier.height(48.dp), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(color = Color(0xFF00FF87))
+                    }
                 } else {
                     Button(
                         onClick = {
@@ -1368,25 +1497,29 @@ fun FirebaseLoginSetupScreen(viewModel: TicTacToeViewModel) {
                             }
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF87)),
-                        shape = RoundedCornerShape(12.dp),
+                        shape = RoundedCornerShape(14.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(48.dp)
+                            .height(50.dp)
+                            .shadow(8.dp, RoundedCornerShape(14.dp))
                     ) {
                         Text(
-                            text = if (isSignUpMode) "SIGN UP NOW" else "SIGN IN SECURELY",
+                            text = if (isSignUpMode) "GET WELCOME BONUS (+200)" else "CHAMPION SIGN IN",
                             color = Color(0xFF040306),
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 1.sp
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Black,
+                                letterSpacing = 1.sp,
+                                fontSize = 14.sp
+                            )
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(16.dp))
 
                     Text(
-                        text = if (isSignUpMode) "Already have an account? Sign In" else "Don't have an account? Sign Up",
+                        text = if (isSignUpMode) "Already have an account? Sign In" else "Don't have an account? Create One",
                         color = Color(0xFF00FF87),
-                        fontSize = 12.sp,
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier
                             .clickable { isSignUpMode = !isSignUpMode }
@@ -1727,6 +1860,16 @@ fun UserHistoryScreen(viewModel: TicTacToeViewModel) {
     val history by viewModel.redeemHistory.collectAsState()
     val matches by viewModel.userMatchHistory.collectAsState()
     var selectedTab by remember { mutableStateOf(0) } // 0: Match Logs, 1: Gift Cards
+    var isRefreshing by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        isRefreshing = true
+        viewModel.loadUserMatchHistory()
+        viewModel.loadRedeemHistory()
+        delay(600)
+        isRefreshing = false
+    }
 
     Column(
         modifier = Modifier
@@ -1739,8 +1882,9 @@ fun UserHistoryScreen(viewModel: TicTacToeViewModel) {
             modifier = Modifier
                 .fillMaxWidth()
                 .background(Color(0xFF141221))
-                .padding(horizontal = 20.dp, vertical = 16.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .padding(horizontal = 20.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text(
                 text = "MY ACTIVITY HISTORY",
@@ -1748,6 +1892,32 @@ fun UserHistoryScreen(viewModel: TicTacToeViewModel) {
                 fontWeight = FontWeight.Black,
                 color = Color.White
             )
+
+            IconButton(
+                onClick = {
+                    scope.launch {
+                        isRefreshing = true
+                        viewModel.loadUserMatchHistory()
+                        viewModel.loadRedeemHistory()
+                        delay(600)
+                        isRefreshing = false
+                    }
+                }
+            ) {
+                if (isRefreshing) {
+                    CircularProgressIndicator(
+                        color = Color(0xFF00FF87),
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = "Refresh history",
+                        tint = Color(0xFF00FF87)
+                    )
+                }
+            }
         }
 
         SpanTabs(
