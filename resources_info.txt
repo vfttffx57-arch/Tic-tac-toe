@@ -1,0 +1,79 @@
+Initialized native services in: /opt/gradle/.gradle/native
+Initialized jansi services in: /opt/gradle/.gradle/native
+The client will now receive all logging from the daemon (pid: 1031). The daemon log file: /opt/gradle/.gradle/daemon/9.3.1/daemon-1031.out.log
+Starting 7th build in daemon [uptime: 3 mins 23.023 secs, performance: 97%, GC rate: 0.00/s, heap usage: 0% of 4 GiB]
+Using 4 worker leases.
+Operational build model parameters: {requiresToolingModels=false, parallelProjectExecution=true, configureOnDemand=false, configurationCache=true, configurationCacheParallelStore=false, configurationCacheParallelLoad=true, isolatedProjects=false, parallelProjectConfiguration=false, intermediateModelCache=false, parallelToolingApiActions=true, invalidateCoupledProjects=false, modelAsProjectDependency=false, resilientModelBuilding=false}
+Encryption key source: default Gradle keystore (pkcs12)
+Calculating task graph as configuration cache cannot be reused because the file system entry '.env' has been removed.
+Watching the file system is configured to be enabled if available
+Unable to list file systems to check whether they can be watched. Disabling watching. Reason: Could not query file systems: could not open mount file (errno 2: No such file or directory)
+File system watching is inactive
+Starting Build
+Resolved plugin [id: 'org.gradle.toolchains.foojay-resolver-convention', version: '1.0.0']
+Settings evaluated using settings file '/app/applet/settings.gradle.kts'.
+Using local directory build cache for the root build (location = /opt/gradle/.gradle/caches/build-cache-1, remove unused entries = after 7 days).
+Projects loaded. Root project using build file '/app/applet/build.gradle.kts'.
+Included projects: [root project 'My Application', project ':app']
+
+> Configure project :
+Evaluating root project 'My Application' using build file '/app/applet/build.gradle.kts'.
+Resolved plugin [id: 'com.android.application', version: '9.1.1', apply: false]
+Resolved plugin [id: 'org.jetbrains.kotlin.plugin.compose', version: '2.2.10', apply: false]
+Resolved plugin [id: 'com.google.devtools.ksp', version: '2.3.5', apply: false]
+Resolved plugin [id: 'io.github.takahirom.roborazzi', version: '1.59.0', apply: false]
+Resolved plugin [id: 'com.google.android.libraries.mapsplatform.secrets-gradle-plugin', version: '2.0.1', apply: false]
+
+> Configure project :app
+Evaluating project ':app' using build file '/app/applet/app/build.gradle.kts'.
+Resolved plugin [id: 'com.android.application', version: '9.1.1']
+Resolved plugin [id: 'org.jetbrains.kotlin.plugin.compose', version: '2.2.10']
+Resolved plugin [id: 'com.google.devtools.ksp', version: '2.3.5']
+Resolved plugin [id: 'io.github.takahirom.roborazzi', version: '1.59.0']
+Resolved plugin [id: 'com.google.android.libraries.mapsplatform.secrets-gradle-plugin', version: '2.0.1']
+Build 1f280072-fa00-4a63-a518-5703e68a6a72 is started
+Using default execution profile
+Detected Android Gradle Plugin compose compiler configuration
+Detected Android Gradle Plugin compose compiler configuration
+Detected Android Gradle Plugin compose compiler configuration
+Detected Android Gradle Plugin compose compiler configuration
+All projects evaluated.
+Task path ':app:mergeDebugResources' matched project ':app'
+Task name matched 'mergeDebugResources'
+Selected primary task 'mergeDebugResources' from project :app
+Tasks to be executed: [task ':app:preBuild', task ':app:preDebugBuild', task ':app:generateDebugResources', task ':app:mergeDebugResources']
+Tasks that were excluded: []
+Build 1f280072-fa00-4a63-a518-5703e68a6a72 is closed
+Using local directory build cache for the root build (location = /opt/gradle/.gradle/caches/build-cache-1, remove unused entries = after 7 days).
+Ignoring listeners of task graph ready event, as this build (:) has already executed work.
+Resolve mutations for :app:preBuild (Thread[#264,Execution worker,5,main]) started.
+:app:preBuild (Thread[#264,Execution worker,5,main]) started.
+
+> Task :app:preBuild UP-TO-DATE
+Skipping task ':app:preBuild' as it has no actions.
+Resolve mutations for :app:preDebugBuild (Thread[#264,Execution worker,5,main]) started.
+:app:preDebugBuild (Thread[#264,Execution worker,5,main]) started.
+
+> Task :app:preDebugBuild UP-TO-DATE
+Skipping task ':app:preDebugBuild' as it has no actions.
+Resolve mutations for :app:generateDebugResources (Thread[#264,Execution worker,5,main]) started.
+:app:generateDebugResources (Thread[#264,Execution worker,5,main]) started.
+
+> Task :app:generateDebugResources UP-TO-DATE
+Build cache key for task ':app:generateDebugResources' is 09ea202be6fd03ec6989bc760cee11cd
+Skipping task ':app:generateDebugResources' as it is up-to-date.
+Resolve mutations for :app:mergeDebugResources (Thread[#264,Execution worker,5,main]) started.
+:app:mergeDebugResources (Thread[#264,Execution worker,5,main]) started.
+
+> Task :app:mergeDebugResources UP-TO-DATE
+Build cache key for task ':app:mergeDebugResources' is c4c9125648daccb5b083bba71d14efa8
+Skipping task ':app:mergeDebugResources' as it is up-to-date.
+Build eefaeac3-d792-4ceb-b00e-5131e4db8277 is started
+Build eefaeac3-d792-4ceb-b00e-5131e4db8277 is closed
+
+See the complete report at file:///app/applet/build/reports/configuration-cache/7lpx5qry7tkqfz82829tpnsiy/8n0x9h5j2l4927jrva5m6zyp3/configuration-cache-report.html
+
+BUILD SUCCESSFUL in 3s
+2 actionable tasks: 2 up-to-date
+Configuration cache entry stored.
+Configuration Cache (/app/applet/.gradle/configuration-cache) [subdir: /app/applet/.gradle/configuration-cache/06349189-2e19-415c-b2d7-040f8a7bd00b] cleanup deleted 8 files/directories.
