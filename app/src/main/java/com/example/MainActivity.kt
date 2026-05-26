@@ -49,13 +49,13 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.*
-import com.example.ui.theme.MyApplicationTheme
-import com.inmobi.sdk.InMobiSdk
-import com.inmobi.sdk.SdkInitializationListener
-import com.inmobi.ads.InMobiInterstitial
-import com.inmobi.ads.listeners.InterstitialAdEventListener
-import com.inmobi.ads.InMobiAdRequestStatus
-import com.inmobi.ads.AdMetaInfo
+import com.example.ui.theme.*
+import com.startapp.sdk.adsbase.StartAppSDK
+import com.startapp.sdk.adsbase.StartAppAd
+import com.startapp.sdk.adsbase.adlisteners.AdDisplayListener
+import com.startapp.sdk.adsbase.adlisteners.AdEventListener
+import com.startapp.sdk.adsbase.adlisteners.VideoListener
+import com.startapp.sdk.ads.banner.Banner
 import org.json.JSONObject
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
@@ -92,7 +92,7 @@ val OPPONENTS_POOL = listOf(
         avatarEmoji = "💫",
         rankTitle = "Gold III",
         winRate = "51%",
-        avatarBg = Brush.linearGradient(listOf(Color(0xFF8E2DE2), Color(0xFF4A00E0))),
+        avatarBg = Brush.linearGradient(listOf(Color.Gray, Color.Gray)),
         tagline = "Let's make this a beautiful game! 🌸"
     ),
     OpponentProfile(
@@ -100,7 +100,7 @@ val OPPONENTS_POOL = listOf(
         avatarEmoji = "👾",
         rankTitle = "Gold I",
         winRate = "54%",
-        avatarBg = Brush.linearGradient(listOf(Color(0xFF00FF87), Color(0xFF60EFFF))),
+        avatarBg = Brush.linearGradient(listOf(Color.White, Color.LightGray)),
         tagline = "Down for a chill session. No tryhards! 🥤"
     ),
     OpponentProfile(
@@ -108,7 +108,7 @@ val OPPONENTS_POOL = listOf(
         avatarEmoji = "⚡",
         rankTitle = "Gold IV",
         winRate = "49%",
-        avatarBg = Brush.linearGradient(listOf(Color(0xFFFF416C), Color(0xFFFF4B2B))),
+        avatarBg = Brush.linearGradient(listOf(Color.Gray, Color.Gray)),
         tagline = "Road to Platinum! Don't lag please. 😤"
     ),
     OpponentProfile(
@@ -116,7 +116,7 @@ val OPPONENTS_POOL = listOf(
         avatarEmoji = "🍕",
         rankTitle = "Silver II",
         winRate = "46%",
-        avatarBg = Brush.linearGradient(listOf(Color(0xFFF12711), Color(0xFFF5AF19))),
+        avatarBg = Brush.linearGradient(listOf(Color.Gray, Color.Gray)),
         tagline = "typing from phone while eating pizza sry"
     ),
     OpponentProfile(
@@ -124,7 +124,7 @@ val OPPONENTS_POOL = listOf(
         avatarEmoji = "🎋",
         rankTitle = "Gold II",
         winRate = "50%",
-        avatarBg = Brush.linearGradient(listOf(Color(0xFF11998e), Color(0xFF38ef7d))),
+        avatarBg = Brush.linearGradient(listOf(Color.Gray, Color.Gray)),
         tagline = "Focus like a mountain, flow like water. 🧘"
     )
 )
@@ -694,7 +694,17 @@ class TicTacToeViewModel(application: Application) : AndroidViewModel(applicatio
         startPlayMatchFlow(activity)
     }
 
-    fun exitToHome() {
+    fun exitToHome(activity: android.app.Activity?) {
+        if (activity != null) {
+            AdManager.showInterstitial(activity) {
+                proceedExitToHome()
+            }
+        } else {
+            proceedExitToHome()
+        }
+    }
+
+    private fun proceedExitToHome() {
         refreshUserProfile()
         loadRedeemHistory()
         loadUserMatchHistory()
@@ -760,7 +770,7 @@ class MainActivity : ComponentActivity() {
 
                 Surface(
                     modifier = Modifier.fillMaxSize(),
-                    color = Color(0xFF0E0D16) // Cosmic slate dark base color
+                    color = Color.Black // Cosmic slate dark base color
                 ) {
                     AppScreenContainer(viewModel)
                 }
@@ -771,201 +781,70 @@ class MainActivity : ComponentActivity() {
 
 // --- INMOBI AD MANAGER ---
 object AdManager {
-    var APP_KEY = "1000200331"
-    var INTERSTITIAL_PLACEMENT_ID = 10000707230L
-    var REWARDED_PLACEMENT_ID = 10000707229L
-
-    var isInitialized = false
-    var isRewardedLoading = false
-    private var mRewardedAd: InMobiInterstitial? = null
-
-    var isInterstitialLoading = false
-    private var mInterstitialAd: InMobiInterstitial? = null
-
-    private var currentInterstitialDismissCallback: (() -> Unit)? = null
-
-    private var currentRewardDismissCallback: (() -> Unit)? = null
-    private var currentRewardEarned = false
-
     fun init(context: android.content.Context) {
-        val appContext = context.applicationContext
-        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-        Log.d("AdManager", "Initializing InMobi SDK with Account: $APP_KEY")
-        try {
-            val consentObject = JSONObject()
-            InMobiSdk.init(appContext, APP_KEY, consentObject, object : SdkInitializationListener {
-                override fun onInitializationComplete(error: java.lang.Error?) {
-                    mainHandler.post {
-                        if (error == null) {
-                            isInitialized = true
-                            Log.d("AdManager", "InMobi initialization complete")
-                            loadRewarded(appContext)
-                            loadInterstitial(appContext)
-                        } else {
-                            Log.e("AdManager", "InMobi initialization failed: ${error.message}")
-                        }
-                    }
-                }
-            })
-        } catch (e: Exception) {
-            Log.e("AdManager", "Init crash: ${e.message}")
-        }
+        StartAppSDK.setTestAdsEnabled(false)
+        StartAppSDK.init(context, "204327585", false)
+        StartAppAd.disableSplash()
+        loadRewarded(context)
+        loadInterstitial(context)
     }
+
+    var rewardedAd: StartAppAd? = null
 
     fun loadRewarded(context: android.content.Context) {
-        val appContext = context.applicationContext
-        if (isRewardedLoading || mRewardedAd != null) return
-        isRewardedLoading = true
-        Log.d("AdManager", "Loading InMobi Rewarded...")
-
-        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-        mainHandler.post {
-            try {
-                mRewardedAd = InMobiInterstitial(appContext, REWARDED_PLACEMENT_ID, object : InterstitialAdEventListener() {
-                    override fun onAdFetchSuccessful(ad: InMobiInterstitial, info: AdMetaInfo) {
-                        Log.d("AdManager", "InMobi Rewarded fetch successful")
-                    }
-
-                    override fun onAdLoadSucceeded(ad: InMobiInterstitial, info: AdMetaInfo) {
-                        isRewardedLoading = false
-                        Log.d("AdManager", "InMobi Rewarded loaded successfully")
-                    }
-
-                    override fun onAdLoadFailed(ad: InMobiInterstitial, status: InMobiAdRequestStatus) {
-                        mRewardedAd = null
-                        isRewardedLoading = false
-                        Log.e("AdManager", "InMobi Rewarded failed to load: ${status.message}")
-                    }
-
-                    override fun onAdDismissed(ad: InMobiInterstitial) {
-                        mRewardedAd = null
-                        loadRewarded(appContext)
-
-                        val earned = currentRewardEarned
-                        val dismiss = currentRewardDismissCallback
-
-                        currentRewardDismissCallback = null
-                        currentRewardEarned = false
-
-                        if (earned) {
-                            dismiss?.invoke()
-                        } else {
-                            val act = context.findActivity()
-                            if (act != null) {
-                                showSimulatedSponsorAd(act, {}, dismiss ?: {})
-                            } else {
-                                dismiss?.invoke()
-                            }
-                        }
-                    }
-
-                    override fun onAdRewardActionCompleted(ad: InMobiInterstitial, rewards: Map<Any, Any>?) {
-                        Log.d("AdManager", "InMobi reward earned callback: $rewards")
-                        currentRewardEarned = true
-                    }
-
-                    override fun onAdDisplayFailed(ad: InMobiInterstitial) {
-                        mRewardedAd = null
-                        isRewardedLoading = false
-                        Log.e("AdManager", "InMobi Rewarded display failed")
-
-                        val dismiss = currentRewardDismissCallback
-                        currentRewardDismissCallback = null
-                        currentRewardEarned = false
-
-                        val act = context.findActivity()
-                        if (act != null) {
-                            showSimulatedSponsorAd(act, {}, dismiss ?: {})
-                        } else {
-                            dismiss?.invoke()
-                        }
-                    }
-                })
-                mRewardedAd?.load()
-            } catch (e: Exception) {
-                isRewardedLoading = false
-                Log.e("AdManager", "Error creating InMobi Rewarded banner/interstitial: ${e.message}")
-            }
-        }
+        rewardedAd = StartAppAd(context)
+        rewardedAd?.loadAd(StartAppAd.AdMode.REWARDED_VIDEO)
     }
 
+    var interstitialAd: StartAppAd? = null
+
     fun loadInterstitial(context: android.content.Context) {
-        val appContext = context.applicationContext
-        if (isInterstitialLoading || mInterstitialAd != null) return
-        isInterstitialLoading = true
-        Log.d("AdManager", "Loading InMobi Interstitial...")
-
-        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-        mainHandler.post {
-            try {
-                mInterstitialAd = InMobiInterstitial(appContext, INTERSTITIAL_PLACEMENT_ID, object : InterstitialAdEventListener() {
-                    override fun onAdFetchSuccessful(ad: InMobiInterstitial, info: AdMetaInfo) {
-                        Log.d("AdManager", "InMobi Interstitial fetch successful")
-                    }
-
-                    override fun onAdLoadSucceeded(ad: InMobiInterstitial, info: AdMetaInfo) {
-                        isInterstitialLoading = false
-                        Log.d("AdManager", "InMobi Interstitial loaded successfully")
-                    }
-
-                    override fun onAdLoadFailed(ad: InMobiInterstitial, status: InMobiAdRequestStatus) {
-                        mInterstitialAd = null
-                        isInterstitialLoading = false
-                        Log.e("AdManager", "InMobi Interstitial failed to load: ${status.message}")
-                    }
-
-                    override fun onAdDismissed(ad: InMobiInterstitial) {
-                        mInterstitialAd = null
-                        loadInterstitial(appContext)
-                        currentInterstitialDismissCallback?.invoke()
-                        currentInterstitialDismissCallback = null
-                    }
-
-                    override fun onAdDisplayFailed(ad: InMobiInterstitial) {
-                        mInterstitialAd = null
-                        isInterstitialLoading = false
-                        Log.e("AdManager", "InMobi Interstitial display failed")
-                        currentInterstitialDismissCallback?.invoke()
-                        currentInterstitialDismissCallback = null
-                    }
-                })
-                mInterstitialAd?.load()
-            } catch (e: Exception) {
-                isInterstitialLoading = false
-                Log.e("AdManager", "Error creating InMobi Interstitial: ${e.message}")
-            }
-        }
+        interstitialAd = StartAppAd(context)
+        interstitialAd?.loadAd(StartAppAd.AdMode.AUTOMATIC)
     }
 
     fun showRewarded(activity: android.app.Activity, onRewardEarned: (Int) -> Unit, onDismiss: () -> Unit) {
-        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-        mainHandler.post {
-            val ad = mRewardedAd
-            if (ad != null && ad.isReady) {
-                currentRewardDismissCallback = onDismiss
-                currentRewardEarned = false
-                ad.show()
-                onRewardEarned(10)
-            } else {
-                Log.d("AdManager", "InMobi Rewarded not ready, trying to reload and showing backup simulated ad")
-                loadRewarded(activity)
-                showSimulatedSponsorAd(activity, onRewardEarned, onDismiss)
-            }
+        if (rewardedAd != null && rewardedAd!!.isReady) {
+            rewardedAd?.setVideoListener(object: VideoListener {
+                override fun onVideoCompleted() {
+                    onRewardEarned(150)
+                }
+            })
+            rewardedAd?.showAd(object : AdDisplayListener {
+                override fun adHidden(ad: com.startapp.sdk.adsbase.Ad?) {
+                    onDismiss()
+                    loadRewarded(activity)
+                }
+                override fun adDisplayed(ad: com.startapp.sdk.adsbase.Ad?) {}
+                override fun adClicked(ad: com.startapp.sdk.adsbase.Ad?) {}
+                override fun adNotDisplayed(ad: com.startapp.sdk.adsbase.Ad?) {
+                    onDismiss()
+                    loadRewarded(activity)
+                }
+            })
+        } else {
+            showSimulatedSponsorAd(activity, onRewardEarned, onDismiss)
+            loadRewarded(activity)
         }
     }
 
     fun showInterstitial(activity: android.app.Activity, onDismiss: () -> Unit = {}) {
-        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-        mainHandler.post {
-            val ad = mInterstitialAd
-            if (ad != null && ad.isReady) {
-                currentInterstitialDismissCallback = onDismiss
-                ad.show()
-            } else {
-                Log.d("AdManager", "InMobi Interstitial not ready, reloading and skipping banner")
-                loadInterstitial(activity)
-                onDismiss()
-            }
+        if (interstitialAd != null && interstitialAd!!.isReady) {
+            interstitialAd?.showAd(object : AdDisplayListener {
+                override fun adHidden(ad: com.startapp.sdk.adsbase.Ad?) {
+                    onDismiss()
+                    loadInterstitial(activity)
+                }
+                override fun adDisplayed(ad: com.startapp.sdk.adsbase.Ad?) {}
+                override fun adClicked(ad: com.startapp.sdk.adsbase.Ad?) {}
+                override fun adNotDisplayed(ad: com.startapp.sdk.adsbase.Ad?) {
+                    onDismiss()
+                    loadInterstitial(activity)
+                }
+            })
+        } else {
+            onDismiss()
+            loadInterstitial(activity)
         }
     }
 }
@@ -1053,7 +932,7 @@ fun showSimulatedSponsorAd(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color(0xFF0E0D16)),
+                    .background(Color.Black),
                 contentAlignment = Alignment.Center
             ) {
                 Column(
@@ -1075,12 +954,12 @@ fun showSimulatedSponsorAd(
                                 modifier = Modifier
                                     .size(8.dp)
                                     .clip(CircleShape)
-                                    .background(if (isCompleted) Color(0xFF00FF87) else Color(0xFFFF2E93))
+                                    .background(if (isCompleted) Color.White else Color.Gray)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
                                 text = "GOOGLE PLAY SPONSOR NETWORK",
-                                color = Color(0xFF8B8A9D),
+                                color = Color.Gray,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
                                 letterSpacing = 1.sp
@@ -1090,12 +969,12 @@ fun showSimulatedSponsorAd(
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(20.dp))
-                                .background(if (isCompleted) Color(0xFF00FF87).copy(alpha = 0.15f) else Color.White.copy(alpha = 0.08f))
+                                .background(if (isCompleted) Color.White.copy(alpha = 0.15f) else Color.White.copy(alpha = 0.08f))
                                 .padding(horizontal = 12.dp, vertical = 6.dp)
                         ) {
                             Text(
                                 text = if (isCompleted) "✓ REWARDED" else "Reward in ${timeLeft}s",
-                                color = if (isCompleted) Color(0xFF00FF87) else Color.White,
+                                color = if (isCompleted) Color.White else Color.White,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold
                             )
@@ -1107,8 +986,8 @@ fun showSimulatedSponsorAd(
                             .fillMaxWidth()
                             .weight(1f)
                             .padding(vertical = 32.dp)
-                            .border(1.dp, Color(0xFF2E2A4E), RoundedCornerShape(24.dp)),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFF131124)),
+                            .border(1.dp, Color.DarkGray, RoundedCornerShape(24.dp)),
+                        colors = CardDefaults.cardColors(containerColor = Color.Black),
                         shape = RoundedCornerShape(24.dp)
                     ) {
                         Column(
@@ -1122,14 +1001,14 @@ fun showSimulatedSponsorAd(
                                 modifier = Modifier
                                     .size(80.dp)
                                     .clip(CircleShape)
-                                    .background(Color(0xFF00FF87).copy(alpha = 0.08f))
-                                    .border(1.dp, Color(0xFF00FF87).copy(alpha = 0.3f), CircleShape),
+                                    .background(Color.White.copy(alpha = 0.08f))
+                                    .border(1.dp, Color.White.copy(alpha = 0.3f), CircleShape),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Star,
                                     contentDescription = null,
-                                    tint = Color(0xFF00FF87),
+                                    tint = Color.White,
                                     modifier = Modifier.size(42.dp)
                                 )
                             }
@@ -1149,7 +1028,7 @@ fun showSimulatedSponsorAd(
                             Text(
                                 text = "Supported entirely by user sponsor views. Support play store gift redemption! Complete 5s ad, click with absolute security.",
                                 fontSize = 13.sp,
-                                color = Color(0xFF8B8A9D),
+                                color = Color.Gray,
                                 textAlign = TextAlign.Center,
                                 modifier = Modifier.padding(horizontal = 8.dp),
                                 lineHeight = 18.sp
@@ -1165,8 +1044,8 @@ fun showSimulatedSponsorAd(
                     ) {
                         LinearProgressIndicator(
                             progress = { if (isCompleted) 1.0f else (5f - timeLeft) / 5f },
-                            color = Color(0xFF00FF87),
-                            trackColor = Color(0xFF1D1B36),
+                            color = Color.White,
+                            trackColor = Color.DarkGray,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(6.dp)
@@ -1178,7 +1057,7 @@ fun showSimulatedSponsorAd(
                         Text(
                             text = if (isCompleted) "✓ YOUR REWARD SECURED! Closing in 1s..." else "Validating backup ad impression... Do not close.",
                             fontSize = 11.sp,
-                            color = if (isCompleted) Color(0xFF00FF87) else Color(0xFF8B8A9D),
+                            color = if (isCompleted) Color.White else Color.Gray,
                             fontWeight = FontWeight.Medium,
                             textAlign = TextAlign.Center
                         )
@@ -1205,33 +1084,17 @@ fun android.content.Context.findActivity(): android.app.Activity? {
 
 @Composable
 fun AdmobBanner(modifier: Modifier = Modifier) {
-    Box(
+    androidx.compose.ui.viewinterop.AndroidView(
+        factory = { context ->
+            com.startapp.sdk.ads.banner.Banner(context)
+        },
         modifier = modifier
             .fillMaxWidth()
             .height(55.dp)
             .padding(horizontal = 16.dp, vertical = 4.dp)
-            .background(Color(0xFF141221), RoundedCornerShape(10.dp))
-            .border(1.dp, Color(0xFF00FF87).copy(alpha = 0.2f), RoundedCornerShape(10.dp)),
-        contentAlignment = Alignment.Center
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(
-                text = "SPONSOR SECURE ⚔️",
-                color = Color(0xFF00FF87),
-                fontSize = 11.sp,
-                fontWeight = FontWeight.ExtraBold,
-                letterSpacing = 1.sp
-            )
-            Text(
-                text = "Supporting Titan Arena Matches",
-                color = Color(0xFFBDC2E8),
-                fontSize = 10.sp
-            )
-        }
-    }
+            .background(Color.Black, RoundedCornerShape(10.dp))
+            .border(1.dp, Color.DarkGray, RoundedCornerShape(10.dp))
+    )
 }
 
 // --- COMPOSE CORE SCREEN ROUTER ---
@@ -1270,9 +1133,9 @@ fun AppScreenContainer(viewModel: TicTacToeViewModel) {
         bottomBar = {
             if (showNavBar) {
                 NavigationBar(
-                    containerColor = Color(0xFF141221),
+                    containerColor = Color.Black,
                     tonalElevation = 8.dp,
-                    modifier = Modifier.border(1.dp, Color(0xFF262144))
+                    modifier = Modifier.border(1.dp, Color.DarkGray)
                 ) {
                     // 1. Play Arena Tab
                     NavigationBarItem(
@@ -1282,19 +1145,19 @@ fun AppScreenContainer(viewModel: TicTacToeViewModel) {
                             Icon(
                                 imageVector = Icons.Default.PlayArrow, 
                                 contentDescription = "Play Arena", 
-                                tint = if (screenState == ScreenState.HOME) Color(0xFF00FF87) else Color(0xFF8B8A9D)
+                                tint = if (screenState == ScreenState.HOME) Color.White else Color.Gray
                             ) 
                         },
                         label = { 
                             Text(
                                 "Play", 
-                                color = if (screenState == ScreenState.HOME) Color.White else Color(0xFF8B8A9D), 
+                                color = if (screenState == ScreenState.HOME) Color.White else Color.Gray, 
                                 fontWeight = FontWeight.Bold, 
                                 fontSize = 11.sp
                             ) 
                         },
                         colors = NavigationBarItemDefaults.colors(
-                            indicatorColor = Color(0xFF231A47)
+                            indicatorColor = Color.DarkGray
                         )
                     )
 
@@ -1310,19 +1173,19 @@ fun AppScreenContainer(viewModel: TicTacToeViewModel) {
                             Icon(
                                 imageVector = Icons.Default.ShoppingCart, 
                                 contentDescription = "Redeem Rewards", 
-                                tint = if (screenState == ScreenState.REDEEM) Color(0xFF00FF87) else Color(0xFF8B8A9D)
+                                tint = if (screenState == ScreenState.REDEEM) Color.White else Color.Gray
                             ) 
                         },
                         label = { 
                             Text(
                                 "Redeem", 
-                                color = if (screenState == ScreenState.REDEEM) Color.White else Color(0xFF8B8A9D), 
+                                color = if (screenState == ScreenState.REDEEM) Color.White else Color.Gray, 
                                 fontWeight = FontWeight.Bold, 
                                 fontSize = 11.sp
                             ) 
                         },
                         colors = NavigationBarItemDefaults.colors(
-                            indicatorColor = Color(0xFF231A47)
+                            indicatorColor = Color.DarkGray
                         )
                     )
 
@@ -1338,19 +1201,19 @@ fun AppScreenContainer(viewModel: TicTacToeViewModel) {
                             Icon(
                                 imageVector = Icons.Default.List, 
                                 contentDescription = "History Logs", 
-                                tint = if (screenState == ScreenState.HISTORY) Color(0xFF00FF87) else Color(0xFF8B8A9D)
+                                tint = if (screenState == ScreenState.HISTORY) Color.White else Color.Gray
                             ) 
                         },
                         label = { 
                             Text(
                                 "History", 
-                                color = if (screenState == ScreenState.HISTORY) Color.White else Color(0xFF8B8A9D), 
+                                color = if (screenState == ScreenState.HISTORY) Color.White else Color.Gray, 
                                 fontWeight = FontWeight.Bold, 
                                 fontSize = 11.sp
                             ) 
                         },
                         colors = NavigationBarItemDefaults.colors(
-                            indicatorColor = Color(0xFF231A47)
+                            indicatorColor = Color.DarkGray
                         )
                     )
 
@@ -1366,26 +1229,26 @@ fun AppScreenContainer(viewModel: TicTacToeViewModel) {
                                 Icon(
                                     imageVector = Icons.Default.Settings, 
                                     contentDescription = "Admin", 
-                                    tint = if (screenState == ScreenState.ADMIN) Color(0xFFFF5252) else Color(0xFF8B8A9D)
+                                    tint = if (screenState == ScreenState.ADMIN) Color.White else Color.Gray
                                 ) 
                             },
                             label = { 
                                 Text(
                                     "Admin", 
-                                    color = if (screenState == ScreenState.ADMIN) Color.White else Color(0xFF8B8A9D), 
+                                    color = if (screenState == ScreenState.ADMIN) Color.White else Color.Gray, 
                                     fontWeight = FontWeight.Bold, 
                                     fontSize = 11.sp
                                 ) 
                             },
                             colors = NavigationBarItemDefaults.colors(
-                                indicatorColor = Color(0xFF381515)
+                                indicatorColor = Color.DarkGray
                             )
                         )
                     }
                 }
             }
         },
-        containerColor = Color(0xFF0C0A12)
+        containerColor = Color.Black
     ) { innerPadding ->
         Box(
             modifier = Modifier
@@ -1428,7 +1291,7 @@ fun FirebaseLoginSetupScreen(viewModel: TicTacToeViewModel) {
     val context = LocalContext.current
 
     val gradientBrush = Brush.verticalGradient(
-        colors = listOf(Color(0xFF0F0B1E), Color(0xFF070510))
+        colors = listOf(Color.Black, Color.Black)
     )
 
     Column(
@@ -1444,15 +1307,15 @@ fun FirebaseLoginSetupScreen(viewModel: TicTacToeViewModel) {
         Box(
             modifier = Modifier
                 .size(90.dp)
-                .background(Brush.radialGradient(listOf(Color(0xFF00FF87).copy(alpha = 0.3f), Color.Transparent)), CircleShape)
+                .background(Brush.radialGradient(listOf(Color.White.copy(alpha = 0.3f), Color.Transparent)), CircleShape)
                 .wrapContentSize(Alignment.Center)
         ) {
             Card(
                 shape = CircleShape,
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF141221)),
+                colors = CardDefaults.cardColors(containerColor = Color.Black),
                 modifier = Modifier
                     .size(70.dp)
-                    .border(2.dp, Color(0xFF00FF87), CircleShape)
+                    .border(2.dp, Color.White, CircleShape)
                     .shadow(12.dp, CircleShape)
             ) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -1475,18 +1338,18 @@ fun FirebaseLoginSetupScreen(viewModel: TicTacToeViewModel) {
             text = "PLAY TIC TAC TOE • EARN PLAY CARDS",
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
-            color = Color(0xFF00FF87),
+            color = Color.White,
             letterSpacing = 3.sp
         )
 
         Spacer(modifier = Modifier.height(30.dp))
 
         Card(
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF141221)),
+            colors = CardDefaults.cardColors(containerColor = Color.Black),
             shape = RoundedCornerShape(24.dp),
             modifier = Modifier
                 .fillMaxWidth()
-                .border(1.dp, Color(0xFF2C274E), RoundedCornerShape(24.dp))
+                .border(1.dp, Color.DarkGray, RoundedCornerShape(24.dp))
                 .shadow(16.dp, RoundedCornerShape(24.dp))
         ) {
             Column(
@@ -1506,7 +1369,7 @@ fun FirebaseLoginSetupScreen(viewModel: TicTacToeViewModel) {
                 Text(
                     text = if (isSignUpMode) "Sign up to start earning redeem codes!" else "Sign in to access your dashboard and points",
                     fontSize = 11.sp,
-                    color = Color(0xFF8B8A9D),
+                    color = Color.Gray,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.padding(vertical = 4.dp)
                 )
@@ -1517,23 +1380,23 @@ fun FirebaseLoginSetupScreen(viewModel: TicTacToeViewModel) {
                 OutlinedTextField(
                     value = emailInput,
                     onValueChange = { emailInput = it },
-                    label = { Text("Email Address", color = Color(0xFF8B8A9D)) },
-                    placeholder = { Text("username@domain.com", color = Color(0xFF5A547C)) },
+                    label = { Text("Email Address", color = Color.Gray) },
+                    placeholder = { Text("username@domain.com", color = Color.Gray) },
                     singleLine = true,
                     leadingIcon = {
                         Icon(
                             imageVector = Icons.Default.Email,
                             contentDescription = "EmailIcon",
-                            tint = Color(0xFF00FF87)
+                            tint = Color.White
                         )
                     },
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = Color.White,
                         unfocusedTextColor = Color.White,
-                        focusedBorderColor = Color(0xFF00FF87),
-                        unfocusedBorderColor = Color(0xFF2C274E),
-                        focusedContainerColor = Color(0xFF0E0B19),
-                        unfocusedContainerColor = Color(0xFF0E0B19)
+                        focusedBorderColor = Color.White,
+                        unfocusedBorderColor = Color.DarkGray,
+                        focusedContainerColor = Color.Black,
+                        unfocusedContainerColor = Color.Black
                     ),
                     modifier = Modifier.fillMaxWidth().testTag("login_email_input"),
                     shape = RoundedCornerShape(14.dp)
@@ -1545,13 +1408,13 @@ fun FirebaseLoginSetupScreen(viewModel: TicTacToeViewModel) {
                 OutlinedTextField(
                     value = passwordInput,
                     onValueChange = { passwordInput = it },
-                    label = { Text("Password", color = Color(0xFF8B8A9D)) },
+                    label = { Text("Password", color = Color.Gray) },
                     singleLine = true,
                     leadingIcon = {
                         Icon(
                             imageVector = Icons.Default.Lock,
                             contentDescription = "LockIcon",
-                            tint = Color(0xFF00FF87)
+                            tint = Color.White
                         )
                     },
                     trailingIcon = {
@@ -1559,7 +1422,7 @@ fun FirebaseLoginSetupScreen(viewModel: TicTacToeViewModel) {
                             Icon(
                                 imageVector = if (isPasswordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
                                 contentDescription = if (isPasswordVisible) "Hide password" else "Show password",
-                                tint = Color(0xFF8B8A9D)
+                                tint = Color.Gray
                             )
                         }
                     },
@@ -1567,10 +1430,10 @@ fun FirebaseLoginSetupScreen(viewModel: TicTacToeViewModel) {
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = Color.White,
                         unfocusedTextColor = Color.White,
-                        focusedBorderColor = Color(0xFF00FF87),
-                        unfocusedBorderColor = Color(0xFF2C274E),
-                        focusedContainerColor = Color(0xFF0E0B19),
-                        unfocusedContainerColor = Color(0xFF0E0B19)
+                        focusedBorderColor = Color.White,
+                        unfocusedBorderColor = Color.DarkGray,
+                        focusedContainerColor = Color.Black,
+                        unfocusedContainerColor = Color.Black
                     ),
                     modifier = Modifier.fillMaxWidth().testTag("login_password_input"),
                     shape = RoundedCornerShape(14.dp)
@@ -1579,13 +1442,13 @@ fun FirebaseLoginSetupScreen(viewModel: TicTacToeViewModel) {
                 if (authError != null) {
                     Spacer(modifier = Modifier.height(12.dp))
                     Card(
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFFFF5252).copy(alpha = 0.15f)),
+                        colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.15f)),
                         shape = RoundedCornerShape(10.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
                             text = authError ?: "",
-                            color = Color(0xFFFF5252),
+                            color = Color.White,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold,
                             textAlign = TextAlign.Center,
@@ -1598,7 +1461,7 @@ fun FirebaseLoginSetupScreen(viewModel: TicTacToeViewModel) {
 
                 if (isLoading) {
                     Box(modifier = Modifier.height(48.dp), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(color = Color(0xFF00FF87))
+                        CircularProgressIndicator(color = Color.White)
                     }
                 } else {
                     Button(
@@ -1609,7 +1472,7 @@ fun FirebaseLoginSetupScreen(viewModel: TicTacToeViewModel) {
                                 viewModel.login(emailInput, passwordInput, context)
                             }
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF87)),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color.White),
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1618,7 +1481,7 @@ fun FirebaseLoginSetupScreen(viewModel: TicTacToeViewModel) {
                     ) {
                         Text(
                             text = if (isSignUpMode) "GET WELCOME BONUS (+200)" else "CHAMPION SIGN IN",
-                            color = Color(0xFF040306),
+                            color = Color.Black,
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Black,
                                 letterSpacing = 1.sp,
@@ -1631,7 +1494,7 @@ fun FirebaseLoginSetupScreen(viewModel: TicTacToeViewModel) {
 
                     Text(
                         text = if (isSignUpMode) "Already have an account? Sign In" else "Don't have an account? Create One",
-                        color = Color(0xFF00FF87),
+                        color = Color.White,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier
@@ -1655,14 +1518,14 @@ fun HomeDashboardScreen(viewModel: TicTacToeViewModel) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF0C0A12))
+            .background(Color.Black)
             .windowInsetsPadding(WindowInsets.safeDrawing)
     ) {
         // Top HUD Bar showing email and current Points
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(Color(0xFF141221))
+                .background(Color.Black)
                 .padding(horizontal = 20.dp, vertical = 14.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
@@ -1671,7 +1534,7 @@ fun HomeDashboardScreen(viewModel: TicTacToeViewModel) {
                 Text(
                     text = email ?: "Player Session",
                     fontSize = 11.sp,
-                    color = Color(0xFF8B8A9D),
+                    color = Color.Gray,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -1680,7 +1543,7 @@ fun HomeDashboardScreen(viewModel: TicTacToeViewModel) {
                     text = "STATUS: ONLINE",
                     fontSize = 9.sp,
                     fontWeight = FontWeight.Bold,
-                    color = Color(0xFF00FF87)
+                    color = Color.White
                 )
             }
 
@@ -1689,8 +1552,8 @@ fun HomeDashboardScreen(viewModel: TicTacToeViewModel) {
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .clip(RoundedCornerShape(30.dp))
-                    .background(Color(0xFF1E1A33))
-                    .border(1.dp, Color(0xFF00FF87).copy(alpha = 0.4f), RoundedCornerShape(30.dp))
+                    .background(Color.DarkGray)
+                    .border(1.dp, Color.White.copy(alpha = 0.4f), RoundedCornerShape(30.dp))
                     .padding(horizontal = 14.dp, vertical = 6.dp)
             ) {
                 Text(text = "⭐", fontSize = 14.sp)
@@ -1714,12 +1577,12 @@ fun HomeDashboardScreen(viewModel: TicTacToeViewModel) {
         ) {
             // Welcome Card showing value conversion
             Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF16132D)),
+                colors = CardDefaults.cardColors(containerColor = Color.Black),
                 shape = RoundedCornerShape(16.dp),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(vertical = 10.dp)
-                    .border(1.dp, Color(0xFF2C2652), RoundedCornerShape(16.dp))
+                    .border(1.dp, Color.DarkGray, RoundedCornerShape(16.dp))
             ) {
                 Row(
                     modifier = Modifier.padding(16.dp),
@@ -1737,7 +1600,7 @@ fun HomeDashboardScreen(viewModel: TicTacToeViewModel) {
                         Text(
                             text = "Win: +300 PTS | Loss: -50 PTS. Win matches and claim Google Play recharge instantly!",
                             fontSize = 11.sp,
-                            color = Color(0xFF8B8A9D)
+                            color = Color.Gray
                         )
                     }
                 }
@@ -1745,7 +1608,7 @@ fun HomeDashboardScreen(viewModel: TicTacToeViewModel) {
 
             // Large Play Button Card
             Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF1C1340)),
+                colors = CardDefaults.cardColors(containerColor = Color.DarkGray),
                 shape = RoundedCornerShape(20.dp),
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1755,7 +1618,7 @@ fun HomeDashboardScreen(viewModel: TicTacToeViewModel) {
                             viewModel.startPlayMatchFlow(activity)
                         }
                     }
-                    .border(2.dp, Color(0xFF00FF87).copy(alpha = 0.3f), RoundedCornerShape(20.dp)),
+                    .border(2.dp, Color.White.copy(alpha = 0.3f), RoundedCornerShape(20.dp)),
             ) {
                 Column(
                     modifier = Modifier
@@ -1766,8 +1629,8 @@ fun HomeDashboardScreen(viewModel: TicTacToeViewModel) {
                     Box(
                         modifier = Modifier
                             .size(72.dp)
-                            .background(Color(0xFF00FF87).copy(alpha = 0.1f), CircleShape)
-                            .border(1.5.dp, Color(0xFF00FF87), CircleShape),
+                            .background(Color.White.copy(alpha = 0.1f), CircleShape)
+                            .border(1.5.dp, Color.White, CircleShape),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(text = "🛡️", fontSize = 32.sp)
@@ -1787,7 +1650,7 @@ fun HomeDashboardScreen(viewModel: TicTacToeViewModel) {
                     Text(
                         text = "Requires watching a Google Play sponsor ad. Safe, instant connection.",
                         fontSize = 12.sp,
-                        color = Color(0xFFBDC2E8),
+                        color = Color.LightGray,
                         textAlign = TextAlign.Center
                     )
 
@@ -1799,10 +1662,10 @@ fun HomeDashboardScreen(viewModel: TicTacToeViewModel) {
                                 viewModel.startPlayMatchFlow(activity)
                             }
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF87)),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color.White),
                         shape = RoundedCornerShape(12.dp)
                     ) {
-                        Text(text = "START VS AI arena", color = Color(0xFF09080E), fontWeight = FontWeight.Bold)
+                        Text(text = "START VS AI arena", color = Color.Black, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -1817,7 +1680,7 @@ fun HomeDashboardScreen(viewModel: TicTacToeViewModel) {
             ) {
                 Text(
                     text = "SIGN OUT SESSION",
-                    color = Color(0xFFFF5252),
+                    color = Color.White,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier
@@ -1839,14 +1702,14 @@ fun RedeemScreen(viewModel: TicTacToeViewModel) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF0C0A12))
+            .background(Color.Black)
             .windowInsetsPadding(WindowInsets.safeDrawing)
     ) {
         // Top Toolbar
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(Color(0xFF141221))
+                .background(Color.Black)
                 .padding(horizontal = 20.dp, vertical = 16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -1868,19 +1731,19 @@ fun RedeemScreen(viewModel: TicTacToeViewModel) {
                 
                 // Current points display panel
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1B1638)),
+                    colors = CardDefaults.cardColors(containerColor = Color.DarkGray),
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .border(1.dp, Color(0xFF332A6B), RoundedCornerShape(16.dp))
+                        .border(1.dp, Color.DarkGray, RoundedCornerShape(16.dp))
                 ) {
                     Column(
                         modifier = Modifier.padding(20.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Text(text = "CURRENT REDEEMABLE BALANCE", color = Color(0xFFBDC2E8), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Text(text = "CURRENT REDEEMABLE BALANCE", color = Color.LightGray, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         Text(text = "⭐ $points PTS", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Black)
-                        Text(text = "Value: ₹${(points / 100.0).format(2)} INR", color = Color(0xFF00FF87), fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text(text = "Value: ₹${(points / 100.0).format(2)} INR", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
                 }
 
@@ -1897,11 +1760,11 @@ fun RedeemScreen(viewModel: TicTacToeViewModel) {
 
                 // ₹10 Redeem option Card
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF161524)),
+                    colors = CardDefaults.cardColors(containerColor = Color.Black),
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .border(1.dp, Color(0xFF28263D), RoundedCornerShape(16.dp))
+                        .border(1.dp, Color.DarkGray, RoundedCornerShape(16.dp))
                 ) {
                     Column(modifier = Modifier.padding(18.dp)) {
                         Row(
@@ -1914,13 +1777,13 @@ fun RedeemScreen(viewModel: TicTacToeViewModel) {
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Column {
                                     Text("₹10 Play Store Card", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                    Text("Costs: 1000 Points", color = Color(0xFF8B8A9D), fontSize = 11.sp)
+                                    Text("Costs: 1000 Points", color = Color.Gray, fontSize = 11.sp)
                                 }
                             }
                             
                             Button(
                                 onClick = { viewModel.claimRedeemRequest(context) },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF87)),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color.White),
                                 shape = RoundedCornerShape(10.dp),
                                 contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
                             ) {
@@ -1948,10 +1811,10 @@ fun RedeemScreen(viewModel: TicTacToeViewModel) {
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(140.dp)
-                            .background(Color(0xFF141322), RoundedCornerShape(16.dp)),
+                            .background(Color.Black, RoundedCornerShape(16.dp)),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text("No redemptions submitted yet.", color = Color(0xFF5E5C70), fontSize = 12.sp)
+                        Text("No redemptions submitted yet.", color = Color.Gray, fontSize = 12.sp)
                     }
                 }
             } else {
@@ -1987,14 +1850,14 @@ fun UserHistoryScreen(viewModel: TicTacToeViewModel) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF0C0A12))
+            .background(Color.Black)
             .windowInsetsPadding(WindowInsets.safeDrawing)
     ) {
         // Top Toolbar
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(Color(0xFF141221))
+                .background(Color.Black)
                 .padding(horizontal = 20.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
@@ -2019,7 +1882,7 @@ fun UserHistoryScreen(viewModel: TicTacToeViewModel) {
             ) {
                 if (isRefreshing) {
                     CircularProgressIndicator(
-                        color = Color(0xFF00FF87),
+                        color = Color.White,
                         modifier = Modifier.size(20.dp),
                         strokeWidth = 2.dp
                     )
@@ -2027,7 +1890,7 @@ fun UserHistoryScreen(viewModel: TicTacToeViewModel) {
                     Icon(
                         imageVector = Icons.Default.Refresh,
                         contentDescription = "Refresh history",
-                        tint = Color(0xFF00FF87)
+                        tint = Color.White
                     )
                 }
             }
@@ -2066,7 +1929,7 @@ fun UserHistoryScreen(viewModel: TicTacToeViewModel) {
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
                             "Play dynamic matches to win cash codes!", 
-                            color = Color(0xFF8B8A9D), 
+                            color = Color.Gray, 
                             fontSize = 12.sp,
                             textAlign = TextAlign.Center
                         )
@@ -2111,7 +1974,7 @@ fun UserHistoryScreen(viewModel: TicTacToeViewModel) {
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
                             "Earn 1000 Points and claim high stakes cards!", 
-                            color = Color(0xFF8B8A9D), 
+                            color = Color.Gray, 
                             fontSize = 12.sp,
                             textAlign = TextAlign.Center
                         )
@@ -2146,8 +2009,8 @@ fun SpanTabs(
             .fillMaxWidth()
             .padding(horizontal = 20.dp, vertical = 8.dp)
             .clip(RoundedCornerShape(30.dp))
-            .background(Color(0xFF141221))
-            .border(1.dp, Color(0xFF262144), RoundedCornerShape(30.dp))
+            .background(Color.Black)
+            .border(1.dp, Color.DarkGray, RoundedCornerShape(30.dp))
             .padding(4.dp)
     ) {
         tabs.forEachIndexed { idx, label ->
@@ -2156,14 +2019,14 @@ fun SpanTabs(
                 modifier = Modifier
                     .weight(1f)
                     .clip(RoundedCornerShape(30.dp))
-                    .background(if (isActive) Color(0xFF1C1340) else Color.Transparent)
+                    .background(if (isActive) Color.DarkGray else Color.Transparent)
                     .clickable { onTabSelected(idx) }
                     .padding(vertical = 10.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
                     text = label.uppercase(Locale.getDefault()),
-                    color = if (isActive) Color(0xFF00FF87) else Color(0xFF8B8A9D),
+                    color = if (isActive) Color.White else Color.Gray,
                     fontWeight = FontWeight.Black,
                     fontSize = 11.sp
                 )
@@ -2182,15 +2045,15 @@ fun UserMatchHistoryRow(match: MatchRecordFirebase) {
     }
 
     val outcomeColor = when (match.outcome) {
-        "WIN" -> Color(0xFF00FF87)
-        "LOSS" -> Color(0xFFFF5252)
-        else -> Color(0xFFFFEB3B)
+        "WIN" -> Color.White
+        "LOSS" -> Color.White
+        else -> Color.LightGray
     }
 
     val iconBg = when (match.outcome) {
-        "WIN" -> Color(0xFF00FF87).copy(alpha = 0.1f)
-        "LOSS" -> Color(0xFFFF5252).copy(alpha = 0.1f)
-        else -> Color(0xFFFFEB3B).copy(alpha = 0.1f)
+        "WIN" -> Color.White.copy(alpha = 0.1f)
+        "LOSS" -> Color.White.copy(alpha = 0.1f)
+        else -> Color.LightGray.copy(alpha = 0.1f)
     }
 
     val badgeEmoji = when (match.outcome) {
@@ -2202,8 +2065,8 @@ fun UserMatchHistoryRow(match: MatchRecordFirebase) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .border(1.dp, Color(0xFF231F3B), RoundedCornerShape(12.dp)),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF141221)),
+            .border(1.dp, Color.DarkGray, RoundedCornerShape(12.dp)),
+        colors = CardDefaults.cardColors(containerColor = Color.Black),
         shape = RoundedCornerShape(12.dp)
     ) {
         Row(
@@ -2230,7 +2093,7 @@ fun UserMatchHistoryRow(match: MatchRecordFirebase) {
                     )
                     Text(
                         text = dateStr,
-                        color = Color(0xFF8B8A9D),
+                        color = Color.Gray,
                         fontSize = 11.sp
                     )
                 }
@@ -2245,7 +2108,7 @@ fun UserMatchHistoryRow(match: MatchRecordFirebase) {
                 )
                 Text(
                     text = if (match.pointsChange >= 0) "+${match.pointsChange} PTS" else "${match.pointsChange} PTS",
-                    color = if (match.pointsChange >= 0) Color(0xFF00FF87) else Color(0xFFFF5252),
+                    color = if (match.pointsChange >= 0) Color.White else Color.White,
                     fontWeight = FontWeight.Bold,
                     fontSize = 11.sp
                 )
@@ -2260,11 +2123,11 @@ fun RedeemHistoryRow(req: RedeemRequest) {
     val context = LocalContext.current
 
     Card(
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF141322)),
+        colors = CardDefaults.cardColors(containerColor = Color.Black),
         shape = RoundedCornerShape(12.dp),
         modifier = Modifier
             .fillMaxWidth()
-            .border(1.dp, Color(0xFF211F36), RoundedCornerShape(12.dp))
+            .border(1.dp, Color.DarkGray, RoundedCornerShape(12.dp))
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
             Row(
@@ -2286,7 +2149,7 @@ fun RedeemHistoryRow(req: RedeemRequest) {
                             "Just now"
                         }
                     }
-                    Text(text = dateFormatted, color = Color(0xFF5C5A75), fontSize = 11.sp)
+                    Text(text = dateFormatted, color = Color.Gray, fontSize = 11.sp)
                 }
 
                 // Status Pill
@@ -2294,13 +2157,13 @@ fun RedeemHistoryRow(req: RedeemRequest) {
                     modifier = Modifier
                         .clip(RoundedCornerShape(30.dp))
                         .background(
-                            if (isPending) Color(0xFFFF9800).copy(alpha = 0.12f) else Color(0xFF00FF87).copy(alpha = 0.12f)
+                            if (isPending) Color.Gray.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.12f)
                         )
                         .padding(horizontal = 10.dp, vertical = 4.dp)
                 ) {
                     Text(
                         text = if (isPending) "PENDING" else "COMPLETED",
-                        color = if (isPending) Color(0xFFFF9800) else Color(0xFF00FF87),
+                        color = if (isPending) Color.Gray else Color.White,
                         fontWeight = FontWeight.Bold,
                         fontSize = 10.sp
                     )
@@ -2312,14 +2175,14 @@ fun RedeemHistoryRow(req: RedeemRequest) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(Color(0xFF0F0E1B), RoundedCornerShape(8.dp))
+                        .background(Color.Black, RoundedCornerShape(8.dp))
                         .padding(10.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
                         text = req.redeemCode,
-                        color = Color(0xFF00FF87),
+                        color = Color.White,
                         fontWeight = FontWeight.Black,
                         fontSize = 12.sp,
                         letterSpacing = 0.5.sp
@@ -2358,14 +2221,14 @@ fun AdminPanelScreen(viewModel: TicTacToeViewModel) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF0C0A12))
+            .background(Color.Black)
             .windowInsetsPadding(WindowInsets.safeDrawing)
     ) {
         // Toolbar
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(Color(0xFF141221))
+                .background(Color.Black)
                 .padding(horizontal = 20.dp, vertical = 16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -2377,7 +2240,7 @@ fun AdminPanelScreen(viewModel: TicTacToeViewModel) {
             )
             Spacer(modifier = Modifier.weight(1f))
             IconButton(onClick = { viewModel.loadAdminData() }) {
-                Icon(imageVector = Icons.Default.Refresh, contentDescription = "Refresh", tint = Color(0xFF00FF87))
+                Icon(imageVector = Icons.Default.Refresh, contentDescription = "Refresh", tint = Color.White)
             }
         }
 
@@ -2386,17 +2249,17 @@ fun AdminPanelScreen(viewModel: TicTacToeViewModel) {
         var pointsInput by remember { mutableStateOf("") }
         
         Card(
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF1A172E)),
+            colors = CardDefaults.cardColors(containerColor = Color.DarkGray),
             shape = RoundedCornerShape(16.dp),
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp)
-                .border(1.dp, Color(0xFF00FF87).copy(alpha = 0.5f), RoundedCornerShape(16.dp))
+                .border(1.dp, Color.White.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
                     text = "🛡️ ADMIN TOKEN POWER",
-                    color = Color(0xFF00FF87),
+                    color = Color.White,
                     fontWeight = FontWeight.ExtraBold,
                     fontSize = 13.sp,
                     letterSpacing = 1.sp
@@ -2404,7 +2267,7 @@ fun AdminPanelScreen(viewModel: TicTacToeViewModel) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = "Add or deduct points dynamically to your profile.",
-                    color = Color(0xFFBDC2E8),
+                    color = Color.LightGray,
                     fontSize = 11.sp
                 )
                 Spacer(modifier = Modifier.height(12.dp))
@@ -2414,7 +2277,7 @@ fun AdminPanelScreen(viewModel: TicTacToeViewModel) {
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Column {
-                        Text(text = "ADMIN BALANCE", color = Color(0xFF8B8A9D), fontSize = 10.sp)
+                        Text(text = "ADMIN BALANCE", color = Color.Gray, fontSize = 10.sp)
                         Text(text = "$myPoints PTS", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Black)
                     }
 
@@ -2425,7 +2288,7 @@ fun AdminPanelScreen(viewModel: TicTacToeViewModel) {
                         OutlinedTextField(
                             value = pointsInput,
                             onValueChange = { pointsInput = it },
-                            placeholder = { Text("Pts", color = Color(0xFF5A547C)) },
+                            placeholder = { Text("Pts", color = Color.Gray) },
                             singleLine = true,
                             keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
                                 keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
@@ -2433,10 +2296,10 @@ fun AdminPanelScreen(viewModel: TicTacToeViewModel) {
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedTextColor = Color.White,
                                 unfocusedTextColor = Color.White,
-                                focusedBorderColor = Color(0xFF00FF87),
-                                unfocusedBorderColor = Color(0xFF2C274E),
-                                focusedContainerColor = Color(0xFF0F0D1C),
-                                unfocusedContainerColor = Color(0xFF0F0D1C)
+                                focusedBorderColor = Color.White,
+                                unfocusedBorderColor = Color.DarkGray,
+                                focusedContainerColor = Color.Black,
+                                unfocusedContainerColor = Color.Black
                             ),
                             modifier = Modifier.width(90.dp).height(50.dp),
                             shape = RoundedCornerShape(10.dp)
@@ -2452,7 +2315,7 @@ fun AdminPanelScreen(viewModel: TicTacToeViewModel) {
                                     Toast.makeText(context, "Enter a valid integer!", Toast.LENGTH_SHORT).show()
                                 }
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF87)),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color.White),
                             shape = RoundedCornerShape(10.dp),
                             modifier = Modifier.height(50.dp)
                         ) {
@@ -2467,13 +2330,13 @@ fun AdminPanelScreen(viewModel: TicTacToeViewModel) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(Color(0xFF18152D))
+                .background(Color.Black)
         ) {
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .clickable { selectedTab = 0 }
-                    .background(if (selectedTab == 0) Color(0xFF282449) else Color.Transparent)
+                    .background(if (selectedTab == 0) Color.DarkGray else Color.Transparent)
                     .padding(vertical = 12.dp),
                 contentAlignment = Alignment.Center
             ) {
@@ -2481,14 +2344,14 @@ fun AdminPanelScreen(viewModel: TicTacToeViewModel) {
                     text = "WITHDRAWALS",
                     fontWeight = FontWeight.Bold,
                     fontSize = 12.sp,
-                    color = if (selectedTab == 0) Color(0xFF00FF87) else Color.White
+                    color = if (selectedTab == 0) Color.White else Color.White
                 )
             }
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .clickable { selectedTab = 1 }
-                    .background(if (selectedTab == 1) Color(0xFF282449) else Color.Transparent)
+                    .background(if (selectedTab == 1) Color.DarkGray else Color.Transparent)
                     .padding(vertical = 12.dp),
                 contentAlignment = Alignment.Center
             ) {
@@ -2496,14 +2359,14 @@ fun AdminPanelScreen(viewModel: TicTacToeViewModel) {
                     text = "WINNINGS LOGS",
                     fontWeight = FontWeight.Bold,
                     fontSize = 12.sp,
-                    color = if (selectedTab == 1) Color(0xFF00FF87) else Color.White
+                    color = if (selectedTab == 1) Color.White else Color.White
                 )
             }
         }
 
         if (isLoading) {
             Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(color = Color(0xFF00FF87))
+                CircularProgressIndicator(color = Color.White)
             }
         } else {
             LazyColumn(
@@ -2521,7 +2384,7 @@ fun AdminPanelScreen(viewModel: TicTacToeViewModel) {
                                     .height(180.dp),
                                 contentAlignment = Alignment.Center
                             ) {
-                                Text("No pending withdrawals requested.", color = Color(0xFF6E6B8D), fontSize = 13.sp)
+                                Text("No pending withdrawals requested.", color = Color.Gray, fontSize = 13.sp)
                             }
                         }
                     } else {
@@ -2542,7 +2405,7 @@ fun AdminPanelScreen(viewModel: TicTacToeViewModel) {
                                     .height(180.dp),
                                 contentAlignment = Alignment.Center
                             ) {
-                                Text("No match winning logs registered.", color = Color(0xFF6E6B8D), fontSize = 13.sp)
+                                Text("No match winning logs registered.", color = Color.Gray, fontSize = 13.sp)
                             }
                         }
                     } else {
@@ -2562,11 +2425,11 @@ fun AdminRequestItem(req: RedeemRequest, onSubmitCode: (String) -> Unit) {
     var codeText by remember { mutableStateOf("") }
 
     Card(
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF161524)),
+        colors = CardDefaults.cardColors(containerColor = Color.Black),
         shape = RoundedCornerShape(12.dp),
         modifier = Modifier
             .fillMaxWidth()
-            .border(1.dp, Color(0xFF2B2846), RoundedCornerShape(12.dp))
+            .border(1.dp, Color.DarkGray, RoundedCornerShape(12.dp))
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(text = "USER: ${req.email}", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 12.sp)
@@ -2575,23 +2438,23 @@ fun AdminRequestItem(req: RedeemRequest, onSubmitCode: (String) -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text(text = "Points claim: ${req.pointsRedeemed} PTS", fontSize = 12.sp, color = Color(0xFF8B8A9D))
-                Text(text = "Amount: ₹${req.amount}", fontSize = 12.sp, color = Color(0xFF00FF87), fontWeight = FontWeight.ExtraBold)
+                Text(text = "Points claim: ${req.pointsRedeemed} PTS", fontSize = 12.sp, color = Color.Gray)
+                Text(text = "Amount: ₹${req.amount}", fontSize = 12.sp, color = Color.White, fontWeight = FontWeight.ExtraBold)
             }
             Spacer(modifier = Modifier.height(12.dp))
 
             OutlinedTextField(
                 value = codeText,
                 onValueChange = { codeText = it },
-                label = { Text("Paste Play Store Redeem Code here", color = Color(0xFF8B8A9D), fontSize = 11.sp) },
+                label = { Text("Paste Play Store Redeem Code here", color = Color.Gray, fontSize = 11.sp) },
                 singleLine = true,
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = Color.White,
                     unfocusedTextColor = Color.White,
-                    focusedBorderColor = Color(0xFF00FF87),
-                    unfocusedBorderColor = Color(0xFF2C274E),
-                    focusedContainerColor = Color(0xFF0B0A11),
-                    unfocusedContainerColor = Color(0xFF0B0A11)
+                    focusedBorderColor = Color.White,
+                    unfocusedBorderColor = Color.DarkGray,
+                    focusedContainerColor = Color.Black,
+                    unfocusedContainerColor = Color.Black
                 ),
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(10.dp)
@@ -2601,7 +2464,7 @@ fun AdminRequestItem(req: RedeemRequest, onSubmitCode: (String) -> Unit) {
 
             Button(
                 onClick = { onSubmitCode(codeText) },
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF87)),
+                colors = ButtonDefaults.buttonColors(containerColor = Color.White),
                 shape = RoundedCornerShape(8.dp),
                 modifier = Modifier.align(Alignment.End)
             ) {
@@ -2614,7 +2477,7 @@ fun AdminRequestItem(req: RedeemRequest, onSubmitCode: (String) -> Unit) {
 @Composable
 fun AdminMatchRecordRow(record: MatchRecordFirebase) {
     Card(
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF141322)),
+        colors = CardDefaults.cardColors(containerColor = Color.Black),
         shape = RoundedCornerShape(10.dp),
         modifier = Modifier.fillMaxWidth()
     ) {
@@ -2628,7 +2491,7 @@ fun AdminMatchRecordRow(record: MatchRecordFirebase) {
                 val dateStr = remember(record.timestamp) {
                     SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault()).format(Date(record.timestamp))
                 }
-                Text(text = dateStr, color = Color(0xFF5C5A75), fontSize = 11.sp)
+                Text(text = dateStr, color = Color.Gray, fontSize = 11.sp)
             }
 
             Column(horizontalAlignment = Alignment.End) {
@@ -2636,11 +2499,11 @@ fun AdminMatchRecordRow(record: MatchRecordFirebase) {
                     text = record.outcome,
                     fontWeight = FontWeight.Black,
                     fontSize = 12.sp,
-                    color = if (record.outcome == "WIN") Color(0xFF00FF87) else Color(0xFFFF5252)
+                    color = if (record.outcome == "WIN") Color.White else Color.White
                 )
                 Text(
                     text = if (record.pointsChange > 0) "+${record.pointsChange} PTS" else "${record.pointsChange} PTS",
-                    color = if (record.pointsChange > 0) Color(0xFF00FF87) else Color(0xFFFF5252),
+                    color = if (record.pointsChange > 0) Color.White else Color.White,
                     fontSize = 11.sp
                 )
             }
@@ -2667,7 +2530,7 @@ fun MatchmakingScreen(viewModel: TicTacToeViewModel) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF0D0C13))
+            .background(Color.Black)
             .windowInsetsPadding(WindowInsets.safeDrawing)
             .padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -2677,7 +2540,7 @@ fun MatchmakingScreen(viewModel: TicTacToeViewModel) {
             text = "MATCH QUEUE ENEMY DETECT",
             fontSize = 15.sp,
             fontWeight = FontWeight.ExtraBold,
-            color = Color(0xFF7000FF),
+            color = Color.Gray,
             letterSpacing = 2.sp
         )
 
@@ -2686,13 +2549,13 @@ fun MatchmakingScreen(viewModel: TicTacToeViewModel) {
         Box(
             modifier = Modifier
                 .size(180.dp)
-                .border(1.5.dp, Color(0xFF1E1A2E), CircleShape),
+                .border(1.5.dp, Color.DarkGray, CircleShape),
             contentAlignment = Alignment.Center
         ) {
             Box(
                 modifier = Modifier
                     .size(130.dp)
-                    .border(1.dp, Color(0xFF2C2646), CircleShape)
+                    .border(1.dp, Color.DarkGray, CircleShape)
             )
 
             Box(
@@ -2704,15 +2567,15 @@ fun MatchmakingScreen(viewModel: TicTacToeViewModel) {
                 Box(
                     modifier = Modifier
                         .size(10.dp)
-                        .background(Color(0xFF7000FF), CircleShape)
+                        .background(Color.Gray, CircleShape)
                 )
             }
 
             Box(
                 modifier = Modifier
                     .size(60.dp)
-                    .background(Color(0xFF1A152B), CircleShape)
-                    .border(1.5.dp, Color(0xFF7000FF), CircleShape),
+                    .background(Color.Black, CircleShape)
+                    .border(1.5.dp, Color.Gray, CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Text(text = "⚔️", fontSize = 22.sp)
@@ -2732,7 +2595,7 @@ fun MatchmakingScreen(viewModel: TicTacToeViewModel) {
 
         Text(
             text = "Awaiting available AI lobby connection...",
-            color = Color(0xFF8B8A9D),
+            color = Color.Gray,
             fontSize = 12.sp,
             textAlign = TextAlign.Center
         )
@@ -2755,7 +2618,7 @@ fun MatchFoundCards(viewModel: TicTacToeViewModel) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF09080E))
+            .background(Color.Black)
             .windowInsetsPadding(WindowInsets.safeDrawing)
             .padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -2765,7 +2628,7 @@ fun MatchFoundCards(viewModel: TicTacToeViewModel) {
             text = "SERVER CONNECTED!",
             fontSize = 24.sp,
             fontWeight = FontWeight.Black,
-            color = Color(0xFF00FF87),
+            color = Color.White,
             letterSpacing = 2.sp
         )
 
@@ -2785,7 +2648,7 @@ fun MatchFoundCards(viewModel: TicTacToeViewModel) {
                     Box(
                         modifier = Modifier
                             .size(70.dp)
-                            .background(Brush.linearGradient(listOf(Color(0xFF7000FF), Color(0xFF4A00E0))), CircleShape)
+                            .background(Brush.linearGradient(listOf(Color.Gray, Color.Gray)), CircleShape)
                             .border(2.dp, Color.White, CircleShape),
                         contentAlignment = Alignment.Center
                     ) {
@@ -2802,7 +2665,7 @@ fun MatchFoundCards(viewModel: TicTacToeViewModel) {
                     )
                     Text(
                         text = "$points PTS",
-                        color = Color(0xFF8B8A9D),
+                        color = Color.Gray,
                         fontSize = 11.sp
                     )
                 }
@@ -2812,7 +2675,7 @@ fun MatchFoundCards(viewModel: TicTacToeViewModel) {
             Box(
                 modifier = Modifier
                     .size(40.dp)
-                    .background(Color(0xFFFF5252), CircleShape)
+                    .background(Color.White, CircleShape)
                     .border(2.dp, Color.White, CircleShape),
                 contentAlignment = Alignment.Center
             ) {
@@ -2846,7 +2709,7 @@ fun MatchFoundCards(viewModel: TicTacToeViewModel) {
                     )
                     Text(
                         text = "${opponent.rankTitle} (${opponent.winRate} WR)",
-                        color = Color(0xFF8B8A9D),
+                        color = Color.Gray,
                         fontSize = 11.sp
                     )
                 }
@@ -2858,7 +2721,7 @@ fun MatchFoundCards(viewModel: TicTacToeViewModel) {
         Text(
             text = "Match started dynamically. Winning grants +300 PTS. Play perfectly!",
             fontSize = 12.sp,
-            color = Color(0xFFFFD700),
+            color = Color.White,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(horizontal = 24.dp)
         )
@@ -2879,7 +2742,7 @@ fun GameplayScreen(viewModel: TicTacToeViewModel) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF0C0A12))
+            .background(Color.Black)
             .windowInsetsPadding(WindowInsets.safeDrawing),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
@@ -2887,19 +2750,19 @@ fun GameplayScreen(viewModel: TicTacToeViewModel) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(Color(0xFF141221))
+                .background(Color.Black)
                 .padding(horizontal = 16.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(modifier = Modifier.size(6.dp).background(Color(0xFF00FF87), CircleShape))
+                Box(modifier = Modifier.size(6.dp).background(Color.White, CircleShape))
                 Spacer(modifier = Modifier.width(6.dp))
                 // Mask the opponent's name so user feels opponent is real but hidden
                 Text(
                     text = "Playing: ${maskOpponentName(opponent.name)}",
                     fontSize = 11.sp,
-                    color = Color(0xFF8E8BB1),
+                    color = Color.LightGray,
                     fontWeight = FontWeight.Bold
                 )
             }
@@ -2907,7 +2770,7 @@ fun GameplayScreen(viewModel: TicTacToeViewModel) {
             Text(
                 text = "Ping: ${ping}ms",
                 fontSize = 11.sp,
-                color = if (ping < 50) Color(0xFF00FF87) else Color(0xFFFFD700)
+                color = if (ping < 50) Color.White else Color.White
             )
         }
 
@@ -2927,7 +2790,7 @@ fun GameplayScreen(viewModel: TicTacToeViewModel) {
                 modifier = Modifier.weight(1f).graphicsLayer(alpha = if (isTurn) 1f else 0.45f)
             ) {
                 Box(
-                    modifier = Modifier.size(36.dp).background(Color(0xFF7000FF), CircleShape),
+                    modifier = Modifier.size(36.dp).background(Color.Gray, CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
                     Text("👤", fontSize = 16.sp)
@@ -2942,7 +2805,7 @@ fun GameplayScreen(viewModel: TicTacToeViewModel) {
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Text("X SIGN", color = Color(0xFF00FF87), fontWeight = FontWeight.Bold, fontSize = 10.sp)
+                    Text("X SIGN", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 10.sp)
                 }
             }
 
@@ -2951,24 +2814,24 @@ fun GameplayScreen(viewModel: TicTacToeViewModel) {
                 Box(
                     modifier = Modifier
                         .background(
-                            if (isMyTurn(isTurn, isThinking)) Color(0xFF00FF87).copy(alpha = 0.12f) else Color(0xFFFF5252).copy(alpha = 0.12f),
+                            if (isMyTurn(isTurn, isThinking)) Color.White.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.12f),
                             RoundedCornerShape(8.dp)
                         )
-                        .border(1.dp, if (isMyTurn(isTurn, isThinking)) Color(0xFF00FF87) else Color(0xFFFF5252), RoundedCornerShape(8.dp))
+                        .border(1.dp, if (isMyTurn(isTurn, isThinking)) Color.White else Color.White, RoundedCornerShape(8.dp))
                         .padding(horizontal = 10.dp, vertical = 4.dp)
                 ) {
                     Text(
                         text = "${activeTime}s",
                         fontWeight = FontWeight.Black,
                         fontSize = 13.sp,
-                        color = if (isMyTurn(isTurn, isThinking)) Color(0xFF00FF87) else Color(0xFFFF5252)
+                        color = if (isMyTurn(isTurn, isThinking)) Color.White else Color.White
                     )
                 }
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
                     text = if (isMyTurn(isTurn, isThinking)) "YOUR MOVE" else "WAITING",
                     fontSize = 9.sp,
-                    color = Color(0xFF8B8A9D),
+                    color = Color.Gray,
                     fontWeight = FontWeight.Bold
                 )
             }
@@ -2988,7 +2851,7 @@ fun GameplayScreen(viewModel: TicTacToeViewModel) {
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Text("O SIGN", color = Color(0xFFFF5252), fontWeight = FontWeight.Bold, fontSize = 10.sp)
+                    Text("O SIGN", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 10.sp)
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 Box(
@@ -3006,13 +2869,13 @@ fun GameplayScreen(viewModel: TicTacToeViewModel) {
         AnimatedVisibility(visible = isThinking) {
             Row(
                 modifier = Modifier
-                    .background(Color(0xFF1B192E), RoundedCornerShape(12.dp))
+                    .background(Color.DarkGray, RoundedCornerShape(12.dp))
                     .padding(horizontal = 14.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                CircularProgressIndicator(color = Color(0xFF00FF87), modifier = Modifier.size(12.dp), strokeWidth = 1.8.dp)
+                CircularProgressIndicator(color = Color.White, modifier = Modifier.size(12.dp), strokeWidth = 1.8.dp)
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Opponent is drafting move...", color = Color(0xFFBDC2E8), fontSize = 12.sp)
+                Text("Opponent is drafting move...", color = Color.LightGray, fontSize = 12.sp)
             }
         }
 
@@ -3027,7 +2890,7 @@ fun GameplayScreen(viewModel: TicTacToeViewModel) {
 
         Text(
             text = "No in-game chatting permitted during tournaments.",
-            color = Color(0xFF454359),
+            color = Color.DarkGray,
             fontSize = 11.sp,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(bottom = 16.dp)
@@ -3049,8 +2912,8 @@ fun GameBoardGrid(
         modifier = Modifier
             .padding(16.dp)
             .aspectRatio(1f)
-            .background(Color(0xFF12101F), RoundedCornerShape(20.dp))
-            .border(2.dp, Color(0xFF23203C), RoundedCornerShape(20.dp))
+            .background(Color.Black, RoundedCornerShape(20.dp))
+            .border(2.dp, Color.DarkGray, RoundedCornerShape(20.dp))
             .padding(12.dp)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -3066,12 +2929,12 @@ fun GameBoardGrid(
                                 .fillMaxHeight()
                                 .padding(5.dp)
                                 .clip(RoundedCornerShape(12.dp))
-                                .background(if (symbolMark.isEmpty()) Color(0xFF1A182E) else Color(0xFF23203D))
+                                .background(if (symbolMark.isEmpty()) Color.DarkGray else Color.DarkGray)
                                 .border(
                                     1.dp,
-                                    if (symbolMark == "X") Color(0xFF00FF87).copy(alpha = 0.5f)
-                                    else if (symbolMark == "O") Color(0xFFFF5252).copy(alpha = 0.5f)
-                                    else Color(0xFF2D2A47),
+                                    if (symbolMark == "X") Color.White.copy(alpha = 0.5f)
+                                    else if (symbolMark == "O") Color.White.copy(alpha = 0.5f)
+                                    else Color.DarkGray,
                                     RoundedCornerShape(12.dp)
                                 )
                                 .clickable(
@@ -3087,8 +2950,8 @@ fun GameBoardGrid(
                                 label = "BoardCellReveal"
                             ) { mark ->
                                 when (mark) {
-                                    "X" -> Text("X", fontSize = 38.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00FF87))
-                                    "O" -> Text("O", fontSize = 38.sp, fontWeight = FontWeight.Bold, color = Color(0xFFFF5252))
+                                    "X" -> Text("X", fontSize = 38.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                    "O" -> Text("O", fontSize = 38.sp, fontWeight = FontWeight.Bold, color = Color.White)
                                     else -> Box(modifier = Modifier.size(1.dp))
                                 }
                             }
@@ -3110,10 +2973,10 @@ fun GameOverScreen(viewModel: TicTacToeViewModel) {
     val isDraw = winner == "DRAW"
 
     val headerText = if (isWin) "VICTORY MATCH!" else if (isDraw) "MATCH TIED" else "DEFEAT"
-    val colorAccent = if (isWin) Color(0xFF00FF87) else if (isDraw) Color(0xFF8B8A9D) else Color(0xFFFF5252)
+    val colorAccent = if (isWin) Color.White else if (isDraw) Color.Gray else Color.White
 
     val gradientBrush = Brush.verticalGradient(
-        colors = listOf(Color(0xFF120E22), Color(0xFF090710))
+        colors = listOf(Color.Black, Color.Black)
     )
 
     Column(
@@ -3149,7 +3012,7 @@ fun GameOverScreen(viewModel: TicTacToeViewModel) {
 
         Text(
             text = "Tournament Versus: ${maskOpponentName(opponent.name)}",
-            color = Color(0xFFBDC2E8),
+            color = Color.LightGray,
             fontSize = 13.sp,
             fontWeight = FontWeight.Medium
         )
@@ -3157,21 +3020,21 @@ fun GameOverScreen(viewModel: TicTacToeViewModel) {
         Spacer(modifier = Modifier.height(20.dp))
 
         Card(
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF161427)),
+            colors = CardDefaults.cardColors(containerColor = Color.Black),
             shape = RoundedCornerShape(16.dp),
             modifier = Modifier
                 .fillMaxWidth()
-                .border(1.dp, Color(0xFF2E2A4D), RoundedCornerShape(16.dp))
+                .border(1.dp, Color.DarkGray, RoundedCornerShape(16.dp))
         ) {
             Column(
                 modifier = Modifier.padding(20.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Text(text = "POINT PAYOUT STATEMENT", color = Color(0xFF8C86AA), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Text(text = "POINT PAYOUT STATEMENT", color = Color.Gray, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     text = if (isWin) "+300 POINTS" else if (isDraw) "0 POINTS" else "-50 POINTS",
-                    color = if (isWin) Color(0xFF00FF87) else if (isDraw) Color.White else Color(0xFFFF5252),
+                    color = if (isWin) Color.White else if (isDraw) Color.White else Color.White,
                     fontSize = 22.sp,
                     fontWeight = FontWeight.Black
                 )
@@ -3180,7 +3043,7 @@ fun GameOverScreen(viewModel: TicTacToeViewModel) {
                     text = if (isWin) "Perfect gameplay! Bonus balance saved instantly to your profile." 
                     else if (isDraw) "Draw has resolved. Reposition yourself to seal victory next!" 
                     else "Slight fatfinger mistake cost 50 points. Watch rewarded videos for fast replenishment!",
-                    color = Color(0xFF8B8A9D),
+                    color = Color.Gray,
                     fontSize = 12.sp,
                     textAlign = TextAlign.Center
                 )
@@ -3198,7 +3061,7 @@ fun GameOverScreen(viewModel: TicTacToeViewModel) {
                     viewModel.playAgain(act)
                 }
             },
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF87)),
+            colors = ButtonDefaults.buttonColors(containerColor = Color.White),
             shape = RoundedCornerShape(12.dp),
             modifier = Modifier
                 .fillMaxWidth()
@@ -3211,9 +3074,12 @@ fun GameOverScreen(viewModel: TicTacToeViewModel) {
 
         // Exit to main home
         OutlinedButton(
-            onClick = { viewModel.exitToHome() },
+            onClick = { 
+                val act = context.findActivity()
+                viewModel.exitToHome(act) 
+            },
             colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-            border = BorderStroke(1.dp, Color(0xFF2E2A4D)),
+            border = BorderStroke(1.dp, Color.DarkGray),
             shape = RoundedCornerShape(12.dp),
             modifier = Modifier
                 .fillMaxWidth()
