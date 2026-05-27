@@ -14,6 +14,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -56,6 +58,11 @@ import com.startapp.sdk.adsbase.adlisteners.AdDisplayListener
 import com.startapp.sdk.adsbase.adlisteners.AdEventListener
 import com.startapp.sdk.adsbase.adlisteners.VideoListener
 import com.startapp.sdk.ads.banner.Banner
+import com.unity3d.ads.UnityAds
+import com.unity3d.ads.IUnityAdsInitializationListener
+import com.unity3d.ads.IUnityAdsLoadListener
+import com.unity3d.ads.IUnityAdsShowListener
+import com.unity3d.ads.UnityAdsShowOptions
 import org.json.JSONObject
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
@@ -129,18 +136,9 @@ val OPPONENTS_POOL = listOf(
     )
 )
 
-// Opponent name obfuscation utility: E.g., "LunaStar_✨" -> "🤖 Lu***ar_✨"
+// Opponent name obfuscation utility
 fun maskOpponentName(name: String): String {
-    val prefix = "🤖 "
-    val suffix = if (name.endsWith("✨") || name.endsWith("🎮") || name.endsWith("🍿") || name.endsWith("🐼")) {
-        "_" + name.takeLast(1)
-    } else ""
-    
-    val cleanName = name.replace("🤖 ", "").replace("✨", "").replace("🎮", "").replace("🍿", "").replace("🐼", "").trim()
-    if (cleanName.length <= 4) {
-         return prefix + cleanName.take(1) + "***" + cleanName.takeLast(1) + suffix
-    }
-    return prefix + cleanName.take(2) + "***" + cleanName.takeLast(2) + suffix
+    return "UNKNOWN_PLAYER"
 }
 
 // --- VIEW MODEL ---
@@ -563,6 +561,10 @@ class TicTacToeViewModel(application: Application) : AndroidViewModel(applicatio
             return listOf(4, 0, 2, 6, 8).random()
         }
 
+        if ((1..100).random() <= 30) {
+            return availableIdx.random()
+        }
+
         var bestVal = -1000
         var bestMove = -1
 
@@ -781,29 +783,110 @@ class MainActivity : ComponentActivity() {
 
 // --- INMOBI AD MANAGER ---
 object AdManager {
+    private const val UNITY_GAME_ID = "6010039"
+    private const val UNITY_REWARDED_AD_UNIT = "Rewarded_Android"
+    private const val UNITY_INTERSTITIAL_AD_UNIT = "Interstitial_Android"
+    
+    var isUnityInitialized = false
+    var unityRewardedLoaded = false
+    var unityInterstitialLoaded = false
+    
+    var rewardedAd: StartAppAd? = null
+    var interstitialAd: StartAppAd? = null
+    
+    var pageChangeCounter = 0
+
     fun init(context: android.content.Context) {
+        // Start.io init
         StartAppSDK.setTestAdsEnabled(false)
         StartAppSDK.init(context, "204327585", false)
         StartAppAd.disableSplash()
-        loadRewarded(context)
-        loadInterstitial(context)
+        loadRewardedStartApp(context)
+        loadInterstitialStartApp(context)
+        
+        // Unity init
+        UnityAds.initialize(
+            context,
+            UNITY_GAME_ID,
+            false, // test mode
+            object : IUnityAdsInitializationListener {
+                override fun onInitializationComplete() {
+                    isUnityInitialized = true
+                    Log.d("AdManager", "Unity Ads Initialized")
+                    loadUnityRewarded()
+                    loadUnityInterstitial()
+                }
+
+                override fun onInitializationFailed(error: UnityAds.UnityAdsInitializationError?, message: String?) {
+                    Log.e("AdManager", "Unity Ads Init Failed: $message")
+                }
+            }
+        )
     }
 
-    var rewardedAd: StartAppAd? = null
-
-    fun loadRewarded(context: android.content.Context) {
+    fun loadRewardedStartApp(context: android.content.Context) {
         rewardedAd = StartAppAd(context)
         rewardedAd?.loadAd(StartAppAd.AdMode.REWARDED_VIDEO)
     }
 
-    var interstitialAd: StartAppAd? = null
-
-    fun loadInterstitial(context: android.content.Context) {
+    fun loadUnityRewarded() {
+        if (!isUnityInitialized) return
+        UnityAds.load(UNITY_REWARDED_AD_UNIT, object : IUnityAdsLoadListener {
+            override fun onUnityAdsAdLoaded(placementId: String) {
+                unityRewardedLoaded = true
+            }
+            override fun onUnityAdsFailedToLoad(placementId: String, error: UnityAds.UnityAdsLoadError, message: String) {
+                unityRewardedLoaded = false
+            }
+        })
+    }
+    
+    fun loadInterstitialStartApp(context: android.content.Context) {
         interstitialAd = StartAppAd(context)
         interstitialAd?.loadAd(StartAppAd.AdMode.AUTOMATIC)
     }
 
+    fun loadUnityInterstitial() {
+        if (!isUnityInitialized) return
+        UnityAds.load(UNITY_INTERSTITIAL_AD_UNIT, object : IUnityAdsLoadListener {
+            override fun onUnityAdsAdLoaded(placementId: String) {
+                unityInterstitialLoaded = true
+            }
+            override fun onUnityAdsFailedToLoad(placementId: String, error: UnityAds.UnityAdsLoadError, message: String) {
+                unityInterstitialLoaded = false
+            }
+        })
+    }
+
     fun showRewarded(activity: android.app.Activity, onRewardEarned: (Int) -> Unit, onDismiss: () -> Unit) {
+        if (unityRewardedLoaded) {
+            UnityAds.show(activity, UNITY_REWARDED_AD_UNIT, UnityAdsShowOptions(), object : IUnityAdsShowListener {
+                override fun onUnityAdsShowFailure(placementId: String, error: UnityAds.UnityAdsShowError, message: String) {
+                    unityRewardedLoaded = false
+                    // Fallback to Start.io
+                    showStartAppRewarded(activity, onRewardEarned, onDismiss)
+                    loadUnityRewarded()
+                }
+
+                override fun onUnityAdsShowStart(placementId: String) {}
+                override fun onUnityAdsShowClick(placementId: String) {}
+
+                override fun onUnityAdsShowComplete(placementId: String, state: UnityAds.UnityAdsShowCompletionState) {
+                    unityRewardedLoaded = false
+                    if (state == UnityAds.UnityAdsShowCompletionState.COMPLETED) {
+                        onRewardEarned(150)
+                    }
+                    onDismiss()
+                    loadUnityRewarded()
+                }
+            })
+        } else {
+            showStartAppRewarded(activity, onRewardEarned, onDismiss)
+            loadUnityRewarded()
+        }
+    }
+
+    private fun showStartAppRewarded(activity: android.app.Activity, onRewardEarned: (Int) -> Unit, onDismiss: () -> Unit) {
         if (rewardedAd != null && rewardedAd!!.isReady) {
             rewardedAd?.setVideoListener(object: VideoListener {
                 override fun onVideoCompleted() {
@@ -813,38 +896,71 @@ object AdManager {
             rewardedAd?.showAd(object : AdDisplayListener {
                 override fun adHidden(ad: com.startapp.sdk.adsbase.Ad?) {
                     onDismiss()
-                    loadRewarded(activity)
+                    loadRewardedStartApp(activity)
                 }
                 override fun adDisplayed(ad: com.startapp.sdk.adsbase.Ad?) {}
                 override fun adClicked(ad: com.startapp.sdk.adsbase.Ad?) {}
                 override fun adNotDisplayed(ad: com.startapp.sdk.adsbase.Ad?) {
                     onDismiss()
-                    loadRewarded(activity)
+                    loadRewardedStartApp(activity)
                 }
             })
         } else {
             showSimulatedSponsorAd(activity, onRewardEarned, onDismiss)
-            loadRewarded(activity)
+            loadRewardedStartApp(activity)
+        }
+    }
+
+    fun handlePageChange(activity: android.app.Activity) {
+        pageChangeCounter++
+        if (pageChangeCounter >= 3) {
+            pageChangeCounter = 0
+            showInterstitial(activity)
         }
     }
 
     fun showInterstitial(activity: android.app.Activity, onDismiss: () -> Unit = {}) {
+        if (unityInterstitialLoaded) {
+            UnityAds.show(activity, UNITY_INTERSTITIAL_AD_UNIT, UnityAdsShowOptions(), object : IUnityAdsShowListener {
+                override fun onUnityAdsShowFailure(placementId: String, error: UnityAds.UnityAdsShowError, message: String) {
+                    unityInterstitialLoaded = false
+                    // Fallback to Start.io
+                    showStartAppInterstitial(activity, onDismiss)
+                    loadUnityInterstitial()
+                }
+
+                override fun onUnityAdsShowStart(placementId: String) {}
+                override fun onUnityAdsShowClick(placementId: String) {}
+
+                override fun onUnityAdsShowComplete(placementId: String, state: UnityAds.UnityAdsShowCompletionState) {
+                    unityInterstitialLoaded = false
+                    onDismiss()
+                    loadUnityInterstitial()
+                }
+            })
+        } else {
+            showStartAppInterstitial(activity, onDismiss)
+            loadUnityInterstitial()
+        }
+    }
+
+    private fun showStartAppInterstitial(activity: android.app.Activity, onDismiss: () -> Unit = {}) {
         if (interstitialAd != null && interstitialAd!!.isReady) {
             interstitialAd?.showAd(object : AdDisplayListener {
                 override fun adHidden(ad: com.startapp.sdk.adsbase.Ad?) {
                     onDismiss()
-                    loadInterstitial(activity)
+                    loadInterstitialStartApp(activity)
                 }
                 override fun adDisplayed(ad: com.startapp.sdk.adsbase.Ad?) {}
                 override fun adClicked(ad: com.startapp.sdk.adsbase.Ad?) {}
                 override fun adNotDisplayed(ad: com.startapp.sdk.adsbase.Ad?) {
                     onDismiss()
-                    loadInterstitial(activity)
+                    loadInterstitialStartApp(activity)
                 }
             })
         } else {
             onDismiss()
-            loadInterstitial(activity)
+            loadInterstitialStartApp(activity)
         }
     }
 }
@@ -1104,22 +1220,11 @@ fun AppScreenContainer(viewModel: TicTacToeViewModel) {
     val email by viewModel.userEmail.collectAsState()
     val context = LocalContext.current
 
-    // Load interstitial proactively on screen changes
+    // Track page changes for Interstitial Ads
     LaunchedEffect(screenState) {
-        AdManager.loadInterstitial(context)
-    }
-
-    // Interstitial timer: every 25 seconds except on game page
-    LaunchedEffect(Unit) {
-        while (true) {
-            delay(25000L)
-            val current = viewModel.currentScreen.value
-            if (current != ScreenState.GAMEPLAY && current != ScreenState.ONBOARDING) {
-                val act = context.findActivity()
-                if (act != null) {
-                    AdManager.showInterstitial(act)
-                }
-            }
+        val act = context.findActivity()
+        if (act != null) {
+            AdManager.handlePageChange(act)
         }
     }
 
@@ -1298,8 +1403,10 @@ fun FirebaseLoginSetupScreen(viewModel: TicTacToeViewModel) {
         modifier = Modifier
             .fillMaxSize()
             .background(gradientBrush)
-            .padding(horizontal = 24.dp)
-            .windowInsetsPadding(WindowInsets.safeDrawing),
+            .windowInsetsPadding(WindowInsets.safeDrawing)
+            .imePadding()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
@@ -1665,7 +1772,7 @@ fun HomeDashboardScreen(viewModel: TicTacToeViewModel) {
                         colors = ButtonDefaults.buttonColors(containerColor = Color.White),
                         shape = RoundedCornerShape(12.dp)
                     ) {
-                        Text(text = "START VS AI arena", color = Color.Black, fontWeight = FontWeight.Bold)
+                        Text(text = "FIND OPPONENT", color = Color.Black, fontWeight = FontWeight.Bold)
                     }
                 }
             }

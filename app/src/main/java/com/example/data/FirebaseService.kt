@@ -314,18 +314,29 @@ object FirebaseService {
                     if (jsonObj.has("documents")) {
                         val documents = jsonObj.getJSONArray("documents")
                         for (i in 0 until documents.length()) {
-                            val doc = documents.getJSONObject(i)
-                            val fields = doc.getJSONObject("fields")
-                            
-                            val id = fields.getJSONObject("id").getString("stringValue")
-                            val rUid = fields.getJSONObject("uid").getString("stringValue")
-                            val rEmail = fields.getJSONObject("email").getString("stringValue")
-                            val rOutcome = fields.getJSONObject("outcome").getString("stringValue")
-                            val rPointsChange = fields.getJSONObject("pointsChange").getString("integerValue").toInt()
-                            val rTimeStr = fields.getJSONObject("timestamp").getString("integerValue")
-                            val rTime = rTimeStr.toLongOrNull() ?: System.currentTimeMillis()
+                            try {
+                                val doc = documents.getJSONObject(i)
+                                val fields = doc.getJSONObject("fields")
+                                
+                                val id = fields.getJSONObject("id").getString("stringValue")
+                                val rUid = fields.getJSONObject("uid").getString("stringValue")
+                                val rEmail = fields.getJSONObject("email").getString("stringValue")
+                                val rOutcome = fields.getJSONObject("outcome").getString("stringValue")
+                                val rPointsChange = if(fields.has("pointsChange")) {
+                                    if(fields.getJSONObject("pointsChange").has("integerValue")) {
+                                        fields.getJSONObject("pointsChange").getString("integerValue").toInt()
+                                    } else {
+                                        0
+                                    }
+                                } else 0
+                                
+                                val rTimeStr = if(fields.has("timestamp") && fields.getJSONObject("timestamp").has("integerValue")) fields.getJSONObject("timestamp").getString("integerValue") else ""
+                                val rTime = rTimeStr.toLongOrNull() ?: System.currentTimeMillis()
 
-                            list.add(MatchRecordFirebase(id, rUid, rEmail, rOutcome, rPointsChange, rTime))
+                                list.add(MatchRecordFirebase(id, rUid, rEmail, rOutcome, rPointsChange, rTime))
+                            } catch (e: Exception) {
+                                // Skip invalid record
+                            }
                         }
                     }
                 }

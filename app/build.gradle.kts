@@ -95,7 +95,7 @@ dependencies {
   // implementation(libs.play.services.location)
   // implementation(libs.play.services.ads)
   implementation(libs.startapp.sdk)
-  // implementation(libs.unity.ads)
+  implementation(libs.unity.ads)
   implementation(libs.retrofit)
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
