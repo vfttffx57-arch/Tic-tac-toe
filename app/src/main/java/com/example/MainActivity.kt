@@ -212,6 +212,12 @@ class TicTacToeViewModel(application: Application) : AndroidViewModel(applicatio
     private val _allRedeemRequests = MutableStateFlow<List<RedeemRequest>>(emptyList())
     val allRedeemRequests: StateFlow<List<RedeemRequest>> = _allRedeemRequests.asStateFlow()
 
+    data class LocalSessionHistory(val gameNumber: Int, val result: String, val movesCount: Int)
+
+    private val _sessionHistory = MutableStateFlow<List<LocalSessionHistory>>(emptyList())
+    val sessionHistory: StateFlow<List<LocalSessionHistory>> = _sessionHistory.asStateFlow()
+    private var gameCounter = 1
+
     private val _allMatchHistory = MutableStateFlow<List<MatchRecordFirebase>>(emptyList())
     val allMatchHistory: StateFlow<List<MatchRecordFirebase>> = _allMatchHistory.asStateFlow()
 
@@ -431,17 +437,7 @@ class TicTacToeViewModel(application: Application) : AndroidViewModel(applicatio
 
     // --- GAME QUEUE & MATCH PLAY FLOW ---
     fun startPlayMatchFlow(activity: android.app.Activity) {
-        // Show Google Play Rewarded Ad before joining Match Queue!
-        AdManager.showRewarded(
-            activity = activity,
-            onRewardEarned = {
-                // Earned reward
-            },
-            onDismiss = {
-                // Instantly queues user into matchmaking
-                startMatchmaking()
-            }
-        )
+        startMatchmaking()
     }
 
     fun startMatchmaking() {
@@ -452,15 +448,13 @@ class TicTacToeViewModel(application: Application) : AndroidViewModel(applicatio
                 delay(1000)
                 _matchmakingTimeSec.value = i
             }
-            // Pick a random styled AI opponent
+            // Pick a random styled opponent
             _opponent.value = OPPONENTS_POOL.random()
             _currentScreen.value = ScreenState.MATCH_FOUND
-            delay(2800) // Beautiful versus card animation pause
-            setupNewGame()
         }
     }
 
-    private fun setupNewGame() {
+    fun setupNewGame() {
         _board.value = List(9) { "" }
         _winner.value = null
         _currentScreen.value = ScreenState.GAMEPLAY
@@ -669,6 +663,12 @@ class TicTacToeViewModel(application: Application) : AndroidViewModel(applicatio
 
             // Record outcome to match logs
             val outcome = if (isWin) "WIN" else if (isDraw) "DRAW" else "LOSS"
+            val localResult = if (isWin) "Player Won" else if (isDraw) "Draw" else "AI Won"
+            val movesCount = _board.value.count { it.isNotEmpty() }
+            val sessionList = _sessionHistory.value.toMutableList()
+            sessionList.add(LocalSessionHistory(gameCounter++, localResult, movesCount))
+            _sessionHistory.value = sessionList
+
             FirebaseService.recordMatch(uid, email, outcome, pointsChange)
 
             delay(1200)
@@ -913,7 +913,7 @@ object AdManager {
 
     fun handlePageChange(activity: android.app.Activity) {
         pageChangeCounter++
-        if (pageChangeCounter >= 3) {
+        if (pageChangeCounter >= 5) {
             pageChangeCounter = 0
             showInterstitial(activity)
         }
@@ -1622,6 +1622,14 @@ fun HomeDashboardScreen(viewModel: TicTacToeViewModel) {
     val context = LocalContext.current
     val activity = context.findActivity()
 
+    LaunchedEffect(Unit) {
+        val sp = context.getSharedPreferences("user_session", Context.MODE_PRIVATE)
+        if (email == "vfttffx57@gmail.com" && !sp.getBoolean("added_1000_pts", false)) {
+            viewModel.adminAddPoints(1000, context)
+            sp.edit().putBoolean("added_1000_pts", true).apply()
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -1778,6 +1786,39 @@ fun HomeDashboardScreen(viewModel: TicTacToeViewModel) {
             }
 
             Spacer(modifier = Modifier.weight(1f))
+
+            val sessionHistory by viewModel.sessionHistory.collectAsState()
+            if (sessionHistory.isNotEmpty()) {
+                Text(
+                    text = "CURRENT SESSION HISTORY",
+                    color = Color.Gray,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .background(Color.DarkGray, RoundedCornerShape(12.dp))
+                        .border(1.dp, Color.Gray, RoundedCornerShape(12.dp))
+                        .padding(8.dp)
+                ) {
+                    items(sessionHistory.reversed()) { match ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp, horizontal = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Game #${match.gameNumber}", color = Color.LightGray, fontSize = 12.sp)
+                            Text(match.result, color = if (match.result == "Player Won") Color.Green else if (match.result == "Draw") Color.Yellow else Color.Red, fontSize = 12.sp)
+                            Text("Moves: ${match.movesCount}", color = Color.Gray, fontSize = 12.sp)
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+            }
 
             Column(
                 modifier = Modifier
@@ -2716,10 +2757,24 @@ fun MatchFoundCards(viewModel: TicTacToeViewModel) {
     val opponent by viewModel.opponent.collectAsState()
     val points by viewModel.userPoints.collectAsState()
 
+    val context = LocalContext.current
     var displayed by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         delay(100)
         displayed = true
+        delay(2800)
+        val act = context.findActivity()
+        if (act != null) {
+            AdManager.showRewarded(
+                activity = act,
+                onRewardEarned = {},
+                onDismiss = {
+                    viewModel.setupNewGame()
+                }
+            )
+        } else {
+            viewModel.setupNewGame()
+        }
     }
 
     Column(
